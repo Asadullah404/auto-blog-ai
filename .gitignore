@@ -1,0 +1,22 @@
+# Secrets — never commit real WordPress credentials
+.env
+pipeline_config.json
+
+# Generated at runtime — one folder per processed URL, plus its local DB/images
+pipeline_output/
+
+# Personal run data — your own URL list
+Links.csv
+
+# Python
+__pycache__/
+*.pyc
+
+# PyInstaller build output
+build_output/
+
+# Local Claude Code tool settings
+.claude/
+
+# Misc
+Automation.rar
