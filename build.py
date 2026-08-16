@@ -68,8 +68,36 @@ def build_app():
     APP_DIR.mkdir(parents=True, exist_ok=True)
 
     # 1) automation.exe — the pipeline itself (kept console: rich UI + prompts)
+    # --collect-all newspaper/nltk sweeps in unrelated ML packages that happen to be
+    # installed in this dev environment (torch, tensorflow, transformers, sklearn,
+    # cupy, numba, ...). The app never calls Article.nlp() or imports any of them —
+    # only .download()/.parse() (HTML fetch + lxml extraction) — so they're dead
+    # weight that bloats the exe past GitHub's release size limit. Exclude them.
     _pyinstaller(ROOT / "automation.py", "automation", windowed=False, distpath=APP_DIR,
-                extra=["--collect-all", "newspaper", "--collect-all", "nltk"])
+                extra=["--collect-all", "newspaper", "--collect-all", "nltk",
+                       "--exclude-module", "torch",
+                       "--exclude-module", "torchvision",
+                       "--exclude-module", "torchaudio",
+                       "--exclude-module", "tensorflow",
+                       "--exclude-module", "tensorboard",
+                       "--exclude-module", "transformers",
+                       "--exclude-module", "sklearn",
+                       "--exclude-module", "scipy",
+                       "--exclude-module", "pandas",
+                       "--exclude-module", "matplotlib",
+                       "--exclude-module", "sympy",
+                       "--exclude-module", "huggingface_hub",
+                       "--exclude-module", "IPython",
+                       "--exclude-module", "jieba",
+                       "--exclude-module", "cupy",
+                       "--exclude-module", "cupyx",
+                       "--exclude-module", "cupy_backends",
+                       "--exclude-module", "numba",
+                       "--exclude-module", "llvmlite",
+                       "--exclude-module", "nvidia",
+                       "--exclude-module", "triton",
+                       "--exclude-module", "graphviz",
+                       "--exclude-module", "lief"])
 
     # 2) wordpress_publisher.exe — standalone publisher / connection test
     _pyinstaller(ROOT / "wordpress_publisher.py", "wordpress_publisher",

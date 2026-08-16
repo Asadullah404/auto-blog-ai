@@ -3,17 +3,23 @@
 Extract an article from a URL → rewrite it for SEO → generate AI images → render
 a finished page → publish it to WordPress with Rank Math SEO fields filled in.
 Runs one URL at a time from a CSV, checkpoints every phase in SQLite so it can
-be killed and resumed at any point, and can be packaged into a double-click
-Windows installer.
+be killed and resumed at any point, and ships as a ready-to-download Windows
+installer — no Python or command line required.
 
-This guide covers everything: one-time setup, the CSV format, every image/
-resolution option, both ways to run it (GUI and command line), how auto-publish
-and resume/idempotency work, and how to build a standalone `.exe` installer.
+**📥 Download the app:** [github.com/Asadullah404/auto-blog-ai/releases/latest](https://github.com/Asadullah404/auto-blog-ai/releases/latest)
+— grab `Install ContentPipeline.exe` under **Assets** and double-click it.
+Full walkthrough in [§0](#0-quick-start--download-install--first-run-no-coding-required).
+
+This guide covers everything, start to finish: downloading and installing the
+app, one-time setup, the CSV format, every image/resolution option, both ways
+to run it (desktop app and command line), how auto-publish and resume/
+idempotency work, and how to build the installer yourself from source.
 
 ---
 
 ## Table of Contents
 
+0. [Quick Start — download, install & first run (no coding required)](#0-quick-start--download-install--first-run-no-coding-required)
 1. [How it works — the six phases](#1-how-it-works--the-six-phases)
 2. [File manifest](#2-file-manifest)
 3. [One-time setup (do this once)](#3-one-time-setup-do-this-once)
@@ -27,6 +33,163 @@ and resume/idempotency work, and how to build a standalone `.exe` installer.
 11. [Building a standalone Windows installer](#11-building-a-standalone-windows-installer)
 12. [Troubleshooting](#12-troubleshooting)
 13. [FAQ](#13-faq)
+
+---
+
+## 0. Quick Start — download, install & first run (no coding required)
+
+This section is the complete A-to-Z for someone who just wants the finished
+app running on their PC. It assumes **zero** prior setup — no Python, no
+git, nothing. If you'd rather run from source or already have it installed,
+skip to [§3](#3-one-time-setup-do-this-once).
+
+**Requirements:** Windows 10 or 11 (64-bit). Nothing else needs to be
+pre-installed — the app is self-contained.
+
+### Step 1 — Download the installer
+1. Open this link in your browser: **https://github.com/Asadullah404/auto-blog-ai/releases/latest**
+2. Scroll to the **Assets** section of the release.
+3. Click **`Install ContentPipeline.exe`** (~200 MB) to download it.
+4. Wait for the download to finish — check your browser's download bar/folder.
+
+### Step 2 — Run the installer
+1. Open your **Downloads** folder and double-click **`Install ContentPipeline.exe`**.
+2. Windows will very likely show a blue **"Windows protected your PC"**
+   SmartScreen warning. This is expected — the app isn't code-signed (that
+   costs money and isn't needed for a tool like this). To proceed:
+   click **More info**, then click **Run anyway**.
+3. A small window appears and does the following automatically (no
+   "Next / Next / Finish" wizard — it just runs):
+   - Copies the app to `%LOCALAPPDATA%\ContentPipeline`
+   - Creates a **Desktop shortcut** named "Content Pipeline"
+   - Creates a **Start Menu** entry
+   - Registers the app in **Settings → Apps → Installed apps** with a
+     working uninstaller
+4. If a copy is already installed, it asks whether to reinstall/update in
+   place — choose **Yes** to get the newest version.
+5. At the end it asks **"Launch it now?"** — click **Yes** to open the
+   Control Panel immediately, or click **No** and launch it later from the
+   Desktop shortcut whenever you're ready.
+
+If anything goes wrong here, see the *"Built `.exe` won't start"* and
+*"GUI's Start/Test/Publish buttons do nothing"* rows in
+[§12 Troubleshooting](#12-troubleshooting).
+
+### Step 3 — Install the one external tool the app needs: `agy`
+The installer bundles everything Python-related, but the actual AI text
+rewriting and AI image generation is done by an external, free CLI tool
+called **`agy`** (Antigravity CLI) — it is *not* bundled inside the `.exe`
+because it's a separate program from Google, not a Python library. You only
+need to do this once, and it works the same whether you're running the
+installed app or the source code.
+
+1. Open a terminal (press the Windows key, type `powershell`, hit Enter).
+2. Run:
+   ```
+   curl -fsSL https://antigravity.google/cli/install.sh | bash
+   ```
+   (If plain PowerShell rejects `curl`/`bash` on your system, run this same
+   command from **Git Bash** instead — install Git for Windows first if you
+   don't have it, then reopen the command in Git Bash.)
+3. Make sure the installer added `agy` to your PATH, then confirm it works
+   by opening a **new** terminal window and typing:
+   ```
+   agy --version
+   ```
+   If that prints a version number, you're done. If it says "command not
+   found", the install didn't finish or PATH wasn't updated — close and
+   reopen your terminal (and the Content Pipeline app, if it was already
+   open) and try again.
+4. The first time `agy` actually runs, it will prompt you to sign in with a
+   Google account in your browser — follow that prompt once; after that it
+   stays signed in.
+
+This app is **100% free to run**: `agy` uses your free Google Antigravity
+quota for both the text rewriting and the Imagen image generation — no API
+keys to buy, no credit card.
+
+### Step 4 — One-time WordPress setup
+Your generated articles get published to a WordPress site, so WordPress
+needs a small one-time setup: installing the free Rank Math SEO plugin,
+uploading one small unlocker file, and creating a scoped login credential
+called an Application Password. This is a **one-time** step per WordPress
+site — do the full walkthrough in [§3, Steps 1–3](#3-one-time-setup-do-this-once)
+now, then come back here.
+
+### Step 5 — Open the app and enter your settings
+1. Launch **Content Pipeline** from the Desktop shortcut (or Start Menu).
+2. Click the **⚙ Settings** tab in the sidebar.
+3. Under **WordPress Connection**, fill in:
+   - **Site URL** — e.g. `https://yoursite.com` (no trailing slash)
+   - **Username** — your WordPress login username
+   - **Application Password** — the one you generated in Step 4, exactly as
+     shown (keep the spaces)
+4. Click **Test Connection** — it should report success. If not, see
+   [§12 Troubleshooting](#12-troubleshooting) (`401 Unauthorized`, `Cannot
+   reach REST API`, etc.).
+5. Under **Publishing**, for your very first run, set:
+   - **Live/Draft** → **Draft** (so your first test post doesn't go live)
+   - **Auto** → **ON** (so it publishes automatically after generating)
+6. Leave **Images** settings on their defaults for now — you can fine-tune
+   format/resolution/text overlay later (see [§7](#7-image-output--format-resolution--text-overlay)).
+7. Click **💾 Save Settings**.
+
+### Step 6 — Prepare your URL list
+1. Create a plain text file named e.g. `Links.csv` (Notepad works fine —
+   just save with a `.csv` extension) containing **one article URL per
+   line**, for example:
+   ```
+   https://example.com/some-article-to-rewrite
+   ```
+   For the full format (adding categories, pre-marking rows as done, etc.),
+   see [§6](#6-the-csv-file--full-format-reference). For your very first
+   test, one line with one URL is enough.
+2. Back in the app's **⚙ Settings** tab, under **Run**, use the file picker
+   to select this CSV.
+3. Click **💾 Save Settings** again.
+
+### Step 7 — Run it
+1. Go to the **🏠 Dashboard** tab.
+2. Click **▶ Start Pipeline**.
+3. Watch progress in real time:
+   - The **status dot** in the header turns from Idle to Running.
+   - **Recent Activity** streams what's happening (extracting → rewriting →
+     generating images → rendering → publishing).
+   - **Latest Feature Image** shows a live thumbnail as soon as the hero
+     image is generated.
+   - For the full unabridged log, switch to the **📜 Logs** tab.
+4. When it finishes your one test URL, it stops automatically (it only
+   loops while there are pending URLs left in the CSV).
+5. Click the **📰 Articles** tab — you should see your article listed with
+   a **Published** status pill and a **🔗 View Post** button. Click it to
+   open the post on your WordPress site and check: feature image is set,
+   section images look right, and (if you installed Rank Math per Step 4)
+   the SEO title/description/focus-keyword boxes are filled in.
+
+### Step 8 — Go live
+Once a test article looks right:
+1. Back in **⚙ Settings** → **Publishing**, flip **Live/Draft** to **Live**.
+2. Click **💾 Save Settings**.
+3. Add the rest of your real URLs to the CSV (one per line — you can add a
+   category as a second column, see [§6](#6-the-csv-file--full-format-reference)).
+4. Click **▶ Start Pipeline** again — it processes every pending row and
+   publishes each one live as it finishes, fully unattended. You can close
+   the app at any time with **■ Stop** (or just closing the window) — it
+   always resumes exactly where it left off; nothing is lost. See
+   [§9](#9-how-resume--idempotency-works).
+
+### Updating later
+When a new version is released, download the new `Install ContentPipeline.exe`
+from the same [Releases page](https://github.com/Asadullah404/auto-blog-ai/releases/latest)
+and run it — it detects the existing install and offers to update in place,
+keeping your settings and generated articles.
+
+### Uninstalling
+**Settings → Apps → Content Pipeline → Uninstall**, or run `Uninstall.bat`
+inside `%LOCALAPPDATA%\ContentPipeline` directly. This removes the app,
+its shortcuts, and the Apps & Features entry (your `pipeline_output/`
+generated articles live alongside it and are removed too — back up anything
+you want to keep first).
 
 ---
 
@@ -401,6 +564,12 @@ skipped automatically (checked against `wp_published` in each article's DB)
 
 ## 11. Building a standalone Windows installer
 
+> **Most people don't need this section.** A pre-built installer is already
+> published at [github.com/Asadullah404/auto-blog-ai/releases/latest](https://github.com/Asadullah404/auto-blog-ai/releases/latest)
+> — see [§0](#0-quick-start--download-install--first-run-no-coding-required)
+> to just download and run it. This section is only for building it yourself
+> from source (e.g. after making code changes, or to publish your own release).
+
 If you want to run this on a PC without a Python environment set up, or just
 want a normal double-click app with a Desktop icon:
 
@@ -426,8 +595,20 @@ Running it again later (a new build) offers to reinstall/update in place.
 
 **What to expect:**
 - The build bundles opencv, lxml, newspaper4k, and customtkinter, so it takes
-  several minutes and produces a few hundred MB of output — that's normal
-  given this project's dependencies, not a sign something's wrong.
+  several minutes and produces a couple hundred MB of output (the published
+  installer is ~200 MB) — that's normal given this project's dependencies,
+  not a sign something's wrong.
+- `build.py` explicitly excludes a list of unrelated ML packages (torch,
+  tensorflow, transformers, sklearn, cupy, numba, ...) from the `automation.exe`
+  build. They're never imported by this project's code, but PyInstaller's
+  `--collect-all newspaper`/`--collect-all nltk` flags will sweep them in
+  anyway if they happen to be installed in your Python environment (e.g. from
+  an unrelated project) — without the excludes, a single machine with those
+  packages present can produce an installer several **gigabytes** larger than
+  it needs to be, and past GitHub's 2 GB release-asset limit. If you add a
+  new import to `automation.py` and the built exe throws an `ImportError` for
+  something on that exclude list, remove it from the `--exclude-module` list
+  in `build.py`.
 - The installer is unsigned, so Windows SmartScreen / your antivirus may
   flag it on first run ("Windows protected your PC") — this is standard for
   any unsigned indie `.exe`; click **More info → Run anyway**. Getting a code
