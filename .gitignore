@@ -2,6 +2,10 @@
 .env
 pipeline_config.json
 
+# Google Drive OAuth — never commit these either
+credentials.json
+token.json
+
 # Generated at runtime — one folder per processed URL, plus its local DB/images
 pipeline_output/
 

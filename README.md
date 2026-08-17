@@ -1,19 +1,24 @@
 # Auto Content Pipeline — Complete Setup & Reference Guide
 
-Extract an article from a URL → rewrite it for SEO → generate AI images → render
-a finished page → publish it to WordPress with Rank Math SEO fields filled in.
-Runs one URL at a time from a CSV, checkpoints every phase in SQLite so it can
-be killed and resumed at any point, and ships as a ready-to-download Windows
-installer — no Python or command line required.
+Extract an article from a URL → rewrite it for SEO **and GEO** (Generative
+Engine Optimization — being citable by AI answer engines, not just ranking in
+search) → generate AI images → render a finished page → publish it to
+WordPress with Rank Math SEO fields filled in. Runs one URL at a time from a
+CSV — which can be a plain local file or a **Google Drive share link that
+multiple PCs work from together** without re-doing each other's articles —
+checkpoints every phase in SQLite so it can be killed and resumed at any
+point, never substitutes a blank placeholder image for a real one, and ships
+as a ready-to-download Windows installer — no Python or command line required.
 
 **📥 Download the app:** [github.com/Asadullah404/auto-blog-ai/releases/latest](https://github.com/Asadullah404/auto-blog-ai/releases/latest)
 — grab `Install ContentPipeline.exe` under **Assets** and double-click it.
 Full walkthrough in [§0](#0-quick-start--download-install--first-run-no-coding-required).
 
 This guide covers everything, start to finish: downloading and installing the
-app, one-time setup, the CSV format, every image/resolution option, both ways
-to run it (desktop app and command line), how auto-publish and resume/
-idempotency work, and how to build the installer yourself from source.
+app, one-time setup, the CSV format (including Google Drive multi-PC sync),
+every image/resolution option, both ways to run it (desktop app and command
+line), how auto-publish and resume/idempotency work, and how to build the
+installer yourself from source.
 
 ---
 
@@ -25,7 +30,7 @@ idempotency work, and how to build the installer yourself from source.
 3. [One-time setup (do this once)](#3-one-time-setup-do-this-once)
 4. [The Control Panel (GUI)](#4-the-control-panel-gui)
 5. [Running from the command line](#5-running-from-the-command-line)
-6. [The CSV file — full format reference](#6-the-csv-file--full-format-reference)
+6. [The CSV file — full format reference (incl. Google Drive multi-PC sync)](#6-the-csv-file--full-format-reference)
 7. [Image output — format, resolution & text overlay](#7-image-output--format-resolution--text-overlay)
 8. [How auto-publish is controlled](#8-how-auto-publish-is-controlled)
 9. [How resume / idempotency works](#9-how-resume--idempotency-works)
@@ -141,9 +146,10 @@ now, then come back here.
    ```
    https://example.com/some-article-to-rewrite
    ```
-   For the full format (adding categories, pre-marking rows as done, etc.),
-   see [§6](#6-the-csv-file--full-format-reference). For your very first
-   test, one line with one URL is enough.
+   For the full format (adding categories, pre-marking rows as done, or
+   sharing one list across multiple PCs via Google Drive), see
+   [§6](#6-the-csv-file--full-format-reference). For your very first test,
+   one line with one URL is enough.
 2. Back in the app's **⚙ Settings** tab, under **Run**, use the file picker
    to select this CSV.
 3. Click **💾 Save Settings** again.
@@ -198,8 +204,8 @@ you want to keep first).
 | # | Phase | File | What happens |
 |---|-------|------|---------------|
 | 1 | **Extract** | `automation.py` | Downloads the URL, pulls the article text/title with `newspaper4k` + BeautifulSoup. Cached in SQLite so a re-run never re-downloads. |
-| 2 | **Transform** | `automation.py` | Sends the article to the `agy` CLI (Antigravity) in batches of `batch_size` sections, using the SEO skill in `Skills/seo_skill.md` as instructions. Returns title, meta description, keywords, category, intro, per-section headings/paragraphs/image prompts, and a conclusion. Checkpointed **per batch**, so a crash mid-rewrite only re-does the unfinished batches. |
-| 3 | **Images** | `automation.py` | Generates one feature/hero image + one image per section (+ an optional Pinterest pin image) via `agy` (Imagen). Sequential, with an `img_inter_delay` pause between calls. Each image is DB-tracked individually — a retry skips images already done. On quota exhaustion it waits `quota_wait_hours` (default 6h) and resumes automatically. |
+| 2 | **Transform** | `automation.py` | Sends the article to the `agy` CLI (Antigravity) in batches of `batch_size` sections, using the SEO **+ GEO** skill in `Skills/seo_skill.md` as instructions. Returns title, meta description, keywords, category, intro, per-section headings/paragraphs/image prompts, and a conclusion. Checkpointed **per batch**, so a crash mid-rewrite only re-does the unfinished batches. JSON parsing is self-healing (strips markdown fences, repairs trailing commas, closes truncated brackets/strings, escapes stray quotes inside prose) and falls back to rewriting sections one at a time if a batch still won't parse — it never loses content, it just does more calls. |
+| 3 | **Images** | `automation.py` | Generates one feature/hero image + one image per section (+ an optional Pinterest pin image) via `agy` (Imagen). Sequential, with an `img_inter_delay` pause between calls. Each image is DB-tracked individually — a retry skips images already done. **Never substitutes a blank/grey placeholder for a real image**: a failed image is retried up to `img_max_retries` times (including a pixel-variance check that rejects flat/blank frames even if a file came back), and if it still can't produce a real photo, the whole run pauses (`quota_wait_hours`, default 6h) and automatically resumes generating that exact image — nothing fake ever ships. |
 | 4 | **Render** | `automation.py` | Composites each section heading onto its image (gradient overlay + fitted text) using Pillow, at the configured resolution and format — independently for section images, the feature image, and the Pinterest pin. |
 | 5 | **Compile** | `automation.py` | Builds the final standalone `final_output.html` (Jinja2 template, no server needed to preview it). |
 | 6 | **Publish** | `wordpress_publisher.py` | Uploads images (with alt text) to WordPress, sets the featured image, rebuilds the post body as clean Gutenberg blocks, sets the category/tags, fills in Rank Math SEO fields, and publishes. Idempotent — a URL that's already published is skipped. |
@@ -223,8 +229,10 @@ everything already generated (see [§10](#10-publishing-articles-you-already-gen
 | `rank-math-rest-meta.php` | your WordPress site, in `wp-content/mu-plugins/` | One-time unlocker so the WordPress REST API accepts Rank Math's SEO fields. Free Rank Math is fine. |
 | `pipeline_config.json` | project root (git-ignored) | Written by the GUI (or by hand). Holds your WordPress credentials, Live/Draft + Auto switches, SEO plugin, per-image-type format/resolution/text-overlay settings, and CSV path. **Contains a live Application Password in plaintext — never commit or share this file.** |
 | `.env` | project root (git-ignored) | Optional no-GUI alternative to `pipeline_config.json` — see [§3 Step 4](#step-4--enter-your-credentials). Also holds a live Application Password; also never commit or share it. |
-| `Links.csv` (or any name, git-ignored) | wherever you keep it | Your list of URLs to process, one per line, with optional category/status columns. See [§6](#6-the-csv-file--full-format-reference). |
-| `Skills/seo_skill.md` | auto-created | The SEO rewriting instructions given to `agy`. Auto-generated on first run if missing — edit it to change the writing style. |
+| `Links.csv` (or any name, git-ignored) | wherever you keep it | Your list of URLs to process, one per line, with optional category/status columns. Can instead be a Google Drive share link shared across multiple PCs. See [§6](#6-the-csv-file--full-format-reference). |
+| `Skills/seo_skill.md` | auto-created | The SEO **+ GEO** rewriting instructions given to `agy`. Auto-generated on first run if missing — edit it to change the writing style. |
+| `credentials.json` (git-ignored) | project root, you provide it | OAuth "Desktop app" client, downloaded from Google Cloud Console — only needed if you use a Google Drive CSV link. See [§6](#6-the-csv-file--full-format-reference). |
+| `token.json` (git-ignored, auto-created) | project root | Your cached Google sign-in, created after the first browser login. Delete it to force signing in again (e.g. with a different Google account). |
 | `pipeline_output/` | auto-created (git-ignored) | One subfolder per URL (named by an 8-char hash of the URL), each containing its own `pipeline_state.db`, `images/`, `rendered/`, and `final_output.html`. |
 | `build.py` | project root | Packages everything into a double-click Windows installer. See [§11](#11-building-a-standalone-windows-installer). |
 | `installer.py` | project root | Source for the installer itself — gets frozen into `Install ContentPipeline.exe` by `build.py`. You don't run this directly. |
@@ -302,7 +310,12 @@ First run auto-installs `customtkinter` and `Pillow` if missing. The window
 has a sidebar with four tabs:
 
 ### 🏠 Dashboard
-- **▶ Start Pipeline / ■ Stop / ⇪ Publish All Generated** — the main controls.
+- **▶ Start Pipeline / ■ Stop / ⏩ Resume Now / ⇪ Publish All Generated** — the main controls.
+  **Resume Now** is only useful while a quota wait is in progress (see
+  [§9](#9-how-resume--idempotency-works)) — it tells the pipeline to retry
+  immediately instead of sitting out the rest of the wait. If quota's genuinely
+  still exhausted it just picks the same countdown back up, so it's always
+  safe to click. Clicking it while nothing is waiting on quota does nothing.
 - **Stat cards**: Total URLs, Pending, Completed, Failed (read live from your
   CSV), and Published (read live from every article's `pipeline_state.db`).
 - **Batch Progress** bar — Completed ÷ Total from the CSV.
@@ -324,7 +337,9 @@ has a sidebar with four tabs:
   - **Pinterest Pin** — a toggle to also generate a tall pin image for the post, plus its own resolution.
 
   Every resolution picker accepts a preset or **Custom…** width/height. See [§7](#7-image-output--format-resolution--text-overlay).
-- **Run**: CSV file picker, "Fresh run" checkbox (wipes cached images/renders
+- **Run**: CSV file picker (**Browse**, or just paste a Google Drive share
+  link directly into the field — see [§6](#6-the-csv-file--full-format-reference)
+  for multi-PC syncing), "Fresh run" checkbox (wipes cached images/renders
   for a clean re-generation without re-scraping or re-writing text).
 - **💾 Save Settings** writes everything to `pipeline_config.json`.
 
@@ -356,7 +371,7 @@ python automation.py --csv Links.csv [options]
 
 | Flag | Values | Default | Meaning |
 |---|---|---|---|
-| `--csv PATH` | any CSV path | prompts if omitted | The URL list to process |
+| `--csv PATH` | local CSV path, or a Google Drive share link | prompts if omitted | The URL list to process — see [§6](#6-the-csv-file--full-format-reference) for the Drive-link, multi-PC case |
 | `--fresh` | flag | off | Wipe cached images/renders for this run (extract + rewrite text are still cached — only images/renders are cleared) |
 | `--image-format` | `webp`, `jpeg` | `webp` | Output format for every generated/rendered image |
 | `--resolution` | `sd`, `hd`, `fhd`, `2k`, or `WIDTHxHEIGHT` | `hd` | Section/heading image resolution — see [§7](#7-image-output--format-resolution--text-overlay) |
@@ -420,9 +435,57 @@ creates that WordPress category if it doesn't already exist.
 - `done` — fully processed, permanently skipped on future runs
 - `failed` — 3 consecutive crashes on this URL, permanently skipped (edit the
   CSV and clear the status to retry it)
+- `pending:<epoch>:<hostname>` — claimed by a specific PC the moment it
+  started that URL (see **Google Drive sync** below). Written automatically;
+  you never type this by hand.
 
 The pipeline reloads the CSV before picking each URL, so you can add/edit
 rows (including categories) while it's running.
+
+### Google Drive sync — running the same list from multiple PCs
+
+Pass a **Google Drive share link** as `--csv` (CLI) or paste it straight into
+the CSV field in the GUI, instead of a local file path:
+
+```
+python automation.py --csv "https://drive.google.com/file/d/1AbCDefGhIJKlmnOP/view?usp=sharing"
+```
+
+Every machine pointed at the same link works off one shared list:
+- Before picking a URL, it downloads the latest copy from Drive — so it sees
+  claims and completions any other PC has already made.
+- The instant it picks a URL, it writes `pending:<unix-timestamp>:<hostname>`
+  into that row and uploads the change immediately — announcing "I'm working
+  this" before any real work starts, so a second PC reading the same file a
+  moment later skips it.
+- If a PC crashes or is closed mid-article, its `pending` claim is simply
+  left in the file — any machine that sees a claim older than
+  `csv_pending_stale_hours` (`automation.py` `CONFIG`, default **3 hours**)
+  treats it as abandoned and safely reclaims the row. Nothing gets
+  permanently stuck waiting on a machine that's gone.
+- `done` and `failed` behave exactly as in the local-file case, and are
+  never reclaimed.
+
+**One-time setup (per Google account, not per PC):**
+1. Go to [Google Cloud Console](https://console.cloud.google.com/) →
+   create a project (or use an existing one) → **APIs & Services → Credentials**.
+2. **Create Credentials → OAuth client ID** → Application type **Desktop app** → Create.
+3. Click **Download JSON** on the client you just created.
+4. Save that file as **`credentials.json`** directly next to `automation.py`
+   (or next to `ContentPipeline.exe`, if using the installed app).
+5. Upload your CSV to Google Drive as a normal file (not a Google Sheet —
+   keep it a `.csv`), and grab its share link.
+
+The **first** run on a given PC opens a browser window asking you to sign in
+with your Google account and approve access — do that once. It then caches
+a `token.json` next to `automation.py` and never prompts again on that
+machine. Run the same `credentials.json` + sign-in flow on each additional
+PC you want to share the list with (each PC gets its own `token.json`; the
+`credentials.json` OAuth client can be reused across all of them).
+
+If `credentials.json` is missing when you pass a Drive link, the pipeline
+stops with a clear message explaining exactly this setup, instead of failing
+unhelpfully.
 
 Example file:
 ```
@@ -539,10 +602,26 @@ Practical implications:
   re-fetched or re-written, so a fresh re-render is fast.
 - Hitting Imagen's quota mid-run doesn't lose anything: the pipeline saves
   state, waits `quota_wait_hours` (default 6h) with a live countdown, then
-  resumes the same URL automatically — no restart needed.
+  resumes the same URL automatically — no restart needed. You don't have to
+  wait it out blindly: press **Enter** in the console, or click **⏩ Resume
+  Now** in the GUI, to retry immediately at any point. If quota's still
+  exhausted, the *next* wait picks the original countdown back up instead of
+  restarting a fresh 6h wait — the deadline is persisted to disk (survives a
+  restart, too), so repeated early checks never push the real reset time out
+  further.
+- An image that can't be produced (quota, a transient `agy` failure, or a
+  flat/blank frame slipping through) is **never** swapped for a placeholder —
+  it's retried up to `img_max_retries` times, and if it's still not real, the
+  whole run pauses and waits like a quota hit, then re-attempts that exact
+  image. An article can only finish with real, generated art in every slot.
 - 3 consecutive crashes on the *same* URL marks it `failed` in the CSV so the
   batch keeps moving instead of looping forever on one bad page; clear the
-  status in the CSV to retry it later.
+  status in the CSV to retry it later. (`failed` is a hard stop, never
+  auto-retried — this used to silently loop forever on old builds; fixed.)
+- If the CSV is a Google Drive link, this same checkpointing is what makes
+  multi-PC sharing safe: a PC that crashes mid-article leaves nothing but a
+  `pending` claim behind, which any machine (including itself, restarted)
+  can pick back up once it goes stale — see [§6](#6-the-csv-file--full-format-reference).
 
 ---
 
@@ -598,6 +677,12 @@ Running it again later (a new build) offers to reinstall/update in place.
   several minutes and produces a couple hundred MB of output (the published
   installer is ~200 MB) — that's normal given this project's dependencies,
   not a sign something's wrong.
+- `build.py` also installs (if missing) and bundles `google-auth`,
+  `google-auth-oauthlib`, and `google-api-python-client` — these back the
+  Google Drive CSV sync feature. `automation.py` itself only installs them
+  lazily on first actual use, but the frozen `.exe` needs them baked in
+  ahead of time, so `build.py` installs them into the build environment
+  before invoking PyInstaller.
 - `build.py` explicitly excludes a list of unrelated ML packages (torch,
   tensorflow, transformers, sklearn, cupy, numba, ...) from the `automation.exe`
   build. They're never imported by this project's code, but PyInstaller's
@@ -638,13 +723,18 @@ run `Uninstall.bat` inside the install folder directly.
 | SSL error on a local/dev site | Local self-signed sites only: set `"verify_ssl": false` in `pipeline_config.json`. Leave it `true` for a real site. |
 | AUTO switch is ON but nothing publishes during a run | Publishing failed for another reason (check the log for the actual error — usually credentials or connectivity) rather than the hook being missing; the article is still saved locally in `pipeline_output/` and will be retried next time you publish. |
 | `agy not found` | Install the Antigravity CLI: `curl -fsSL https://antigravity.google/cli/install.sh \| bash`, and make sure it's on PATH. This is required whether you run from source or from a built `.exe`. |
-| Pipeline seems stuck / repeatedly waits "quota reached" | Some Imagen quota/billing messages are detected generically — if `agy`'s output happens to contain words like "billing" or "upgrade" for unrelated reasons, it can be misread as a quota hit. Check the log for what `agy` actually printed. |
+| Pipeline seems stuck / repeatedly waits "quota reached" | Two things can trigger this: (1) `agy`'s output literally contains quota/billing language, or (2) an image failed `img_max_retries` times in a row with no clear quota message — treated the same way on purpose, since that pattern almost always *is* exhausted quota. Either way, the run isn't broken — it's waiting `quota_wait_hours` (default 6h) and will resume the same image automatically. Check the log for what `agy` actually printed if you want to confirm, or just press **Enter**/click **⏩ Resume Now** to check right now instead of waiting. |
+| I want to check if quota reset early instead of waiting the full 6h | Press **Enter** in the console, or click **⏩ Resume Now** in the GUI, at any point during a quota wait. It retries immediately; if quota's still exhausted, the wait resumes the *same* countdown instead of restarting a fresh 6h wait, so checking early never costs you anything. |
+| `Could not parse JSON` in the log | Not an error — it's a recovery notice from Phase 2. The AI's response didn't parse as clean JSON (usually a stray double-quote inside prose truncating a string, or the response getting cut off), so the pipeline automatically falls back to rewriting that batch's sections one at a time instead, which is far more reliable. Nothing is lost; it just takes a couple of extra `agy` calls. If you see it on *every single batch*, edit `Skills/seo_skill.md` to reinforce rule 14 (never use `"` inside text) or lower `CONFIG["batch_size"]` in `automation.py` so each response is shorter. |
 | Invalid `--resolution` error | Custom resolutions must be `WIDTHxHEIGHT` with both sides between 64 and 8000, e.g. `1000x1000`. Preset names are `sd`, `hd`, `fhd`, `2k`. |
 | Category from the CSV isn't showing up on the post | Make sure the CSV row actually has a category column and the URL hasn't already been fully transformed with the old category cached — re-running the same URL re-applies the CSV category on top of the cache automatically, so just re-run it. |
 | Built `.exe` won't start / Windows SmartScreen warning | Expected for an unsigned app — click **More info → Run anyway**. If it still won't launch, try running `ContentPipeline.exe` from a terminal (`cmd`) to see the actual error instead of a silent failure. |
 | GUI's Start/Test/Publish buttons do nothing in the built app | `automation.exe` / `wordpress_publisher.exe` must be in the same folder as `ContentPipeline.exe`. Reinstall via `Install ContentPipeline.exe` rather than copying files individually. |
 | `python build.py` fails partway with a missing-module error at runtime (not build time) | PyInstaller occasionally misses a package's non-Python data files. Note which import failed in the built exe's console output and re-run the build with an extra `--collect-all <package>` flag added to that entry's build step in `build.py`. |
 | Blurry or clipped windows on the Control Panel | If Windows display scaling is set above 100%, make sure you're on the latest `pipeline_gui.py` — older copies could lay out wider than the window at fractional scaling. Re-download/pull if you hit this. |
+| `Google Drive isn't set up yet — credentials.json not found` | Follow the one-time setup in [§6](#6-the-csv-file--full-format-reference): create an OAuth "Desktop app" client in Google Cloud Console, download it, save it as `credentials.json` next to `automation.py` (or the installed app's `.exe` folder). |
+| A URL never gets picked up on any PC (Drive-synced CSV) | It's likely stuck with a stale `pending:` claim from a PC that hasn't checked back in within `csv_pending_stale_hours` yet (default 3h) — wait it out, lower `CONFIG["csv_pending_stale_hours"]` in `automation.py`, or just clear that row's status column by hand in the Drive file. |
+| Google Drive sign-in browser window doesn't appear / times out | Make sure nothing is blocking `localhost` connections (some corporate firewalls/VPNs do) — the OAuth flow briefly runs a local web server to receive the sign-in callback. Try again off VPN if it hangs. |
 
 ---
 
@@ -656,7 +746,23 @@ before creating a post, and skips URLs already published there.
 
 **Can I edit the SEO writing style?**
 Yes — edit `Skills/seo_skill.md` after it's auto-created on first run. It's
-plain Markdown instructions given to `agy` for every rewrite call.
+plain Markdown instructions given to `agy` for every rewrite call, and covers
+both SEO (rankings) and GEO (getting cited by AI answer engines like Google
+AI Overviews, ChatGPT, and Perplexity).
+
+**Will the pipeline ever put a blank/grey image in a published post?**
+No. If a real image can't be produced — quota exhaustion, a transient `agy`
+failure, or a flat/blank frame that technically comes back as a file — the
+pipeline retries that exact image and, failing that, pauses the whole run and
+waits (same as a quota hit) instead of ever substituting a placeholder. See
+[§1](#1-how-it-works--the-six-phases) and [§9](#9-how-resume--idempotency-works).
+
+**Can I run this on more than one PC against the same list of URLs?**
+Yes — point every PC's `--csv` (or the GUI's CSV field) at the same Google
+Drive share link instead of a local file. Each machine claims a URL the
+moment it starts it and syncs that claim to Drive immediately, so the others
+skip it; a claim from a PC that crashed or closed goes stale automatically
+and gets picked back up. Full setup in [§6](#6-the-csv-file--full-format-reference).
 
 **Can I change image quality?**
 Not exposed as a flag currently — both WebP and JPEG save at a fixed quality

@@ -2634,6 +2634,10 @@ Auto Content Pipeline — 24/7 Batch Mode
 Features:
   - NO section limit — processes every section A to Z
   - CSV batch mode: reads URLs from a .csv file, marks each "done" when complete
+  - CSV can also be a Google Drive share link — multiple PCs can run against
+    the SAME shared list; each URL is claimed ("pending") the moment a
+    machine starts it so another PC won't redo it, and a claim that goes
+    stale (machine crashed/closed) is safe to reclaim automatically
   - Quota-safe: on Imagen quota hit, waits 6 hours then auto-resumes same URL
   - Runs forever until every URL in the CSV is marked done
   - FULL MID-RUN RESUME — if stopped at ANY point (Ctrl+C, crash, power loss):
@@ -2642,16 +2646,25 @@ Features:
       · Images    → every individual image is DB-tracked; already-done images are skipped
       · Render    → each rendered section file is checked on disk; already done = skip
       · Compile   → rebuilds HTML (fast, no API calls)
-      · CSV       → only marks "done" after the full pipeline succeeds for that URL
-  - Sequential image generation: one at a time
+      · CSV       → "pending" the moment a URL starts, "done" only after the
+                     full pipeline succeeds — never left ambiguous
+  - Sequential image generation: one at a time — never falls back to a blank
+    placeholder; a real image that can't be produced pauses the whole run
+    (quota_wait) and is retried, instead of continuing with fake art
   - 100% dynamic & fault-tolerant JSON parsing + auto-retry
 Usage:
   python automation.py                        # prompts for CSV path
-  python automation.py --csv links.csv        # use specific CSV
+  python automation.py --csv links.csv        # use a local CSV
+  python automation.py --csv "https://drive.google.com/file/d/XXXX/view"  # shared Drive CSV
   python automation.py --csv links.csv --fresh  # wipe caches and restart
-CSV format (one URL per row, optional status column):
+CSV format (one URL per row, optional category + status columns):
   https://example.com/article1
-  https://example.com/article2,done          ← already done, will be skipped
+  https://example.com/article2,Technology,done      ← already done, will be skipped
+  https://example.com/article3,Technology,pending:1734567890:desktop-01  ← claimed by a PC, will be skipped until stale
+Google Drive setup (only needed if you pass a Drive link as --csv):
+  1. Google Cloud Console → create an OAuth client, type "Desktop app".
+  2. Download its JSON, save it as credentials.json next to automation.py.
+  3. First run opens a browser to sign in once; after that it's automatic.
 """
 
 # ── PHASE 0: AUTO INSTALL ────────────────────────────────────
@@ -2740,7 +2753,7 @@ except Exception: pass
 print("\n✅ Dependencies ready.\n")
 
 # ── IMPORTS ──────────────────────────────────────────────────
-import json, sqlite3, textwrap, hashlib, re, platform, argparse
+import json, sqlite3, textwrap, hashlib, re, platform, argparse, threading, queue
 
 if platform.system() != "Windows":
     import pty, select
@@ -2802,6 +2815,10 @@ CONFIG = {
     "feature_text_overlay":  False,    # paste the post title onto the feature image
     # ── Pinterest pin image ─────────────────────────────────
     "pinterest_pin":         False,    # also render + upload a tall Pinterest pin image
+    # ── Google Drive CSV sync (multi-PC shared link-list) ───
+    "drive_credentials_file": "credentials.json",  # OAuth "Desktop app" client, from Google Cloud Console
+    "drive_token_file":       "token.json",        # cached login — created after first browser sign-in
+    "csv_pending_stale_hours": 3,       # a "pending" claim older than this is treated as an abandoned/crashed run and reclaimed
 }
 
 QUOTA_WAIT_SECONDS = CONFIG["quota_wait_hours"] * 3600
@@ -3078,6 +3095,8 @@ def csv_load(csv_path: Path) -> list[dict]:
     A 2nd column is treated as a status only when it's exactly "done"/"failed"
     (case-insensitive); otherwise it's treated as the category. This keeps old
     2-column "url,done" CSVs working unchanged.
+    Status can also be "pending:<epoch>:<hostname>" — a claim placed by
+    whichever PC (local or Drive-synced) is currently working that row.
     """
     rows = []
     with open(csv_path, newline="", encoding="utf-8") as f:
@@ -3091,7 +3110,9 @@ def csv_load(csv_path: Path) -> list[dict]:
             category, status = "", ""
             if len(raw_row) >= 3:
                 category = raw_row[1].strip()
-                status   = raw_row[2].strip().lower()
+                status   = raw_row[2].strip()
+                if not status.startswith("pending:"):
+                    status = status.lower()
             elif len(raw_row) == 2:
                 second = raw_row[1].strip()
                 if second.lower() in ("done", "failed"):
@@ -3130,44 +3151,268 @@ def csv_mark_done(csv_path: Path, url: str):
     ok(f"[dim]CSV updated → [cyan]{url}[/] marked [green]done[/]")
 
 
-def csv_pending(csv_path: Path) -> list[dict]:
-    """Return rows (url + category) not yet marked done."""
-    return [r for r in csv_load(csv_path) if r["status"] != "done"]
+def csv_mark_failed(csv_path: Path, url: str):
+    """Mark a specific URL as permanently failed (excluded from future pending lists)."""
+    rows = csv_load(csv_path)
+    for row in rows:
+        if row["url"] == url:
+            row["status"] = "failed"
+    csv_save(csv_path, rows)
+
+
+def csv_claim_pending(csv_path: Path, url: str):
+    """
+    Stamp a row as "pending:<epoch>:<hostname>" — claims it for this machine
+    so a different PC reading the same (Drive-synced) CSV skips it instead of
+    re-doing the same article. Written the moment work starts, not at the end.
+    """
+    rows = csv_load(csv_path)
+    token = f"pending:{int(time.time())}:{platform.node().lower()}"
+    for row in rows:
+        if row["url"] == url:
+            row["status"] = token
+    csv_save(csv_path, rows)
+
+
+def csv_pending(csv_path: Path, stale_hours: float = 3) -> list[dict]:
+    """
+    Rows available to (re)claim: never started, or a "pending" claim old
+    enough (stale_hours) that whatever PC placed it has presumably crashed
+    or was closed — so it's safe to pick back up. "done" and "failed" are
+    always excluded — "failed" is a terminal state (see run_one_url), not a
+    transient one, so it must never be silently retried forever.
+    """
+    now = time.time()
+    stale_secs = stale_hours * 3600
+    result = []
+    for r in csv_load(csv_path):
+        status = r["status"]
+        if status in ("done", "failed"):
+            continue
+        if status.startswith("pending:"):
+            try:
+                claimed_at = float(status.split(":")[1])
+            except (IndexError, ValueError):
+                claimed_at = 0
+            if now - claimed_at < stale_secs:
+                continue  # another machine claimed this recently — leave it alone
+        result.append(r)
+    return result
+
+# ─────────────────────────────────────────────────────────────
+# GOOGLE DRIVE CSV SYNC — one link-list shared by every PC
+#   - the CSV lives in Drive; each machine downloads the latest copy
+#     before picking a row, and uploads immediately after claiming one
+#   - lets multiple PCs run against the same list without re-doing
+#     articles another machine already started or finished
+# ─────────────────────────────────────────────────────────────
+DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive"]
+_DRIVE_LIBS  = {
+    "google.auth":          "google-auth",
+    "google_auth_oauthlib": "google-auth-oauthlib",
+    "googleapiclient":      "google-api-python-client",
+}
+
+def _is_drive_link(s: str) -> bool:
+    return bool(re.match(r"https?://", s.strip(), re.IGNORECASE)) and \
+           ("drive.google.com" in s or "docs.google.com" in s)
+
+def _drive_extract_file_id(link: str) -> str:
+    m = re.search(r"/d/([a-zA-Z0-9_-]{10,})", link)
+    if m: return m.group(1)
+    m = re.search(r"[?&]id=([a-zA-Z0-9_-]{10,})", link)
+    if m: return m.group(1)
+    return link.strip()
+
+def _drive_ensure_libs():
+    for imp, pkg in _DRIVE_LIBS.items():
+        _install(pkg, imp)
+
+def _drive_service():
+    """
+    Authenticated Drive API client via personal Google OAuth.
+    First run on a machine opens a browser to sign in; after that the
+    token is cached in drive_token_file and reused silently.
+    """
+    _drive_ensure_libs()
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from googleapiclient.discovery import build
+
+    token_path = Path(CONFIG["drive_token_file"])
+    creds_path = Path(CONFIG["drive_credentials_file"])
+    creds = None
+
+    if token_path.exists():
+        try:
+            creds = Credentials.from_authorized_user_file(str(token_path), DRIVE_SCOPES)
+        except Exception:
+            creds = None
+
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            if not creds_path.exists():
+                err(f"Google Drive isn't set up yet — {creds_path} not found.\n"
+                    f"  In Google Cloud Console: create an OAuth client (type "
+                    f"'Desktop app'), download its JSON, save it as "
+                    f"'{creds_path}' next to automation.py, then run again.")
+                sys.exit(1)
+            flow  = InstalledAppFlow.from_client_secrets_file(str(creds_path), DRIVE_SCOPES)
+            creds = flow.run_local_server(port=0)
+        token_path.write_text(creds.to_json(), encoding="utf-8")
+
+    return build("drive", "v3", credentials=creds)
+
+def drive_download_csv(file_id: str, dest: Path):
+    from googleapiclient.http import MediaIoBaseDownload
+    svc = _drive_service()
+    request = svc.files().get_media(fileId=file_id)
+    buf = BytesIO()
+    downloader = MediaIoBaseDownload(buf, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    dest.write_bytes(buf.getvalue())
+
+def drive_upload_csv(file_id: str, src: Path):
+    from googleapiclient.http import MediaFileUpload
+    svc = _drive_service()
+    media = MediaFileUpload(str(src), mimetype="text/csv", resumable=False)
+    svc.files().update(fileId=file_id, media_body=media).execute()
 
 # ─────────────────────────────────────────────────────────────
 # QUOTA WAIT — 6-hour countdown, then continues
+#   - the target end-time is persisted to disk so a *second* quota hit
+#     (before the first wait would've finished) resumes the SAME
+#     countdown instead of restarting a fresh 6h wait
+#   - pressing Enter (console) or clicking "Resume Now" (GUI, via the
+#     subprocess's piped stdin) skips the remaining wait and retries
+#     immediately; if quota is still exhausted, the next quota_wait()
+#     call just picks the original countdown back up
 # ─────────────────────────────────────────────────────────────
+_STDIN_QUEUE: "queue.Queue" = queue.Queue()
+_STDIN_READER_STARTED = False
+
+def _start_stdin_reader():
+    """Lazily starts one persistent background thread that reads lines from
+    stdin — works whether stdin is an interactive console (user presses
+    Enter) or a pipe the GUI writes to (Resume Now button). Exits cleanly
+    on EOF instead of busy-looping."""
+    global _STDIN_READER_STARTED
+    if _STDIN_READER_STARTED:
+        return
+    _STDIN_READER_STARTED = True
+
+    def _reader():
+        while True:
+            try:
+                line = sys.stdin.readline()
+            except Exception:
+                return
+            if not line:   # EOF — stdin closed, nothing more to read ever
+                return
+            _STDIN_QUEUE.put(line)
+
+    threading.Thread(target=_reader, daemon=True).start()
+
+def _resume_requested() -> bool:
+    """Non-blocking: True if any input arrived since the last check."""
+    _start_stdin_reader()
+    got = False
+    while True:
+        try:
+            _STDIN_QUEUE.get_nowait()
+            got = True
+        except queue.Empty:
+            break
+    return got
+
+def _quota_state_path() -> Path:
+    p = Path(CONFIG["output_dir"])
+    p.mkdir(parents=True, exist_ok=True)
+    return p / "quota_wait_state.json"
+
+def _load_quota_end_time() -> float | None:
+    p = _quota_state_path()
+    if not p.exists():
+        return None
+    try:
+        return float(json.loads(p.read_text(encoding="utf-8"))["end_time"])
+    except Exception:
+        return None
+
+def _save_quota_end_time(end_time: float):
+    try:
+        _quota_state_path().write_text(json.dumps({"end_time": end_time}), encoding="utf-8")
+    except Exception:
+        pass
+
+def _clear_quota_end_time():
+    p = _quota_state_path()
+    if p.exists():
+        try: p.unlink()
+        except Exception: pass
 
 def quota_wait():
-    """Block for QUOTA_WAIT_SECONDS, printing a live countdown."""
+    """Blocks until quota should have reset (or the user manually resumes),
+    printing a live countdown."""
     hours = CONFIG["quota_wait_hours"]
+    now = time.time()
+
+    # Reuse the existing deadline if we're still inside a previous wait
+    # window (e.g. a manual "Resume Now" retried too early and hit quota
+    # again) — only start a brand-new N-hour countdown if there's no
+    # deadline yet, or the old one has already fully elapsed.
+    end_time = _load_quota_end_time()
+    if end_time is None or end_time <= now:
+        end_time = now + QUOTA_WAIT_SECONDS
+        _save_quota_end_time(end_time)
+
+    _resume_requested()   # drain any stale "resume" signal from before this wait started
+
+    resume_by = time.strftime("%H:%M", time.localtime(end_time))
     console.print()
     console.print(Panel(
         f"[bold yellow]⚠  IMAGEN QUOTA REACHED[/]\n\n"
-        f"  Waiting [bold cyan]{hours} hours[/] for quota to reset, then auto-resuming.\n"
-        f"  Leave this terminal running — it will continue on its own.\n"
+        f"  Waiting up to [bold cyan]{hours} hours[/] (until ~{resume_by}) for quota to "
+        f"reset, then auto-resuming.\n"
+        f"  Leave this running — it continues on its own.\n"
+        f"  Press [bold]Enter[/] (or click [bold]Resume Now[/] in the app) to retry "
+        f"immediately — if quota is still exhausted, it picks this same countdown back "
+        f"up instead of restarting a fresh {hours}h wait.\n"
         f"  Press [bold]Ctrl+C[/] only if you want to stop completely.",
-        title="[bold red]Quota Wait — Auto Resume in {hours}h[/]".format(hours=hours),
+        title=f"[bold red]Quota Wait — Auto Resume by {resume_by}[/]",
         border_style="yellow",
         padding=(1, 4),
     ))
     console.print()
 
-    end_time = time.time() + QUOTA_WAIT_SECONDS
+    resumed_early = False
     while True:
         remaining = end_time - time.time()
         if remaining <= 0:
             break
+        if _resume_requested():
+            resumed_early = True
+            break
         h = int(remaining // 3600)
         m = int((remaining % 3600) // 60)
         s = int(remaining % 60)
-        console.print(f"  [dim]⏳ Quota resume in: [cyan]{h:02d}:{m:02d}:{s:02d}[/][/dim]",
-                      end="\r")
-        time.sleep(5)
+        console.print(f"  [dim]⏳ Quota resume in: [cyan]{h:02d}:{m:02d}:{s:02d}[/] "
+                      f"(Enter/Resume Now to retry immediately)[/dim]", end="\r")
+        time.sleep(1)
 
     console.print()
     console.print()
-    ok("[bold green]Quota wait complete — resuming pipeline![/]")
+    if resumed_early:
+        ok("[bold green]Resume requested — retrying now.[/] "
+           "[dim](if quota's still exhausted, the countdown above picks back up)[/]")
+    else:
+        ok("[bold green]Quota wait complete — resuming pipeline![/]")
+        _clear_quota_end_time()
     console.print()
 
 # ─────────────────────────────────────────────────────────────
@@ -3368,6 +3613,43 @@ def _clean_raw_llm_output(raw: str) -> str:
 def _fix_common_json_errors(s):
     return re.sub(r',\s*([}\]])', r'\1', s)
 
+def _escape_stray_quotes(s: str) -> str:
+    """
+    LLM-written prose commonly quotes a word or phrase with a plain " for
+    emphasis (e.g. the "best" option), which — inside a JSON string value —
+    reads to a real parser as that string ending early. Walk the text and
+    escape any " that isn't actually acting as a JSON structural delimiter
+    (i.e. not immediately followed, past optional whitespace, by one of
+    : , } ] or end-of-string) instead of treating it as a string boundary.
+    """
+    out = []; i = 0; n = len(s); in_str = False
+    while i < n:
+        ch = s[i]
+        if ch == '\\' and in_str:
+            out.append(ch)
+            if i + 1 < n:
+                out.append(s[i+1]); i += 2
+            else:
+                i += 1
+            continue
+        if ch == '"':
+            if not in_str:
+                in_str = True
+                out.append(ch); i += 1
+                continue
+            j = i + 1
+            while j < n and s[j] in ' \t\r\n':
+                j += 1
+            if j >= n or s[j] in ':,}]':
+                in_str = False
+                out.append(ch)
+            else:
+                out.append('\\"')
+            i += 1
+            continue
+        out.append(ch); i += 1
+    return "".join(out)
+
 def _heal_truncated_json(s):
     s = s.rstrip().rstrip(",")
     in_str = False; esc = False; stack = []
@@ -3407,6 +3689,12 @@ def _parse_json(raw, expected_sections=0):
         lambda s: json.loads(_fix_common_json_errors(s), strict=False),
         lambda s: json.loads(_heal_truncated_json(s), strict=False),
         lambda s: json.loads(_heal_truncated_json(s[:s.rfind('}')+1]), strict=False),
+        # stray-quote repair — tried after the cheap fixes fail, since it
+        # rewrites the string and is more likely to mask a genuine error
+        lambda s: json.loads(_fix_common_json_errors(_escape_stray_quotes(s)), strict=False),
+        lambda s: json.loads(_heal_truncated_json(_escape_stray_quotes(s)), strict=False),
+        lambda s: json.loads(_heal_truncated_json(
+            _escape_stray_quotes(s[:s.rfind('}')+1])), strict=False),
     ]:
         try:
             d = fn(clean)
@@ -3425,7 +3713,8 @@ CONCLUSION_PROMPT = """\
 Write a compelling conclusion section for the article "{title}".
 {extra}
 
-Return ONLY valid JSON (no markdown, no preamble):
+Return ONLY valid JSON (no markdown, no preamble). NEVER use a double-quote
+character " inside a string value — use single quotes ' ' instead:
 {{
   "heading": "Engaging conclusion H2 with keyword",
   "paragraphs": [
@@ -3472,7 +3761,9 @@ SOURCE SECTIONS:
 
 RULES:
 - Output ONLY valid JSON, no markdown fences, no preamble.
-- Do NOT use unescaped double quotes inside string values.
+- NEVER use a double-quote character " anywhere inside a string value, not
+  even escaped. If you want to quote or emphasize a word or phrase, use
+  single quotes ' ' instead — for example the 'best' option, not the "best" option.
 - Do NOT use literal linebreaks inside JSON strings.
 - Return exactly {n_sections} section objects in "sections".
 - Each section "paragraphs" must have 2-4 paragraphs (80-120 words each).
@@ -3502,6 +3793,9 @@ Return ONLY: {{"sections": [ ... ]}}
 RULES:
 - Valid JSON only, no markdown, no preamble.
 - Exactly {n} section objects.
+- NEVER use a double-quote character " inside any string value — use single
+  quotes ' ' if you need to quote or emphasize a word or phrase.
+- Do NOT use literal linebreaks inside JSON strings.
 
 Sections:
 {block}
@@ -3519,7 +3813,8 @@ def _build_sections_block(sections):
 def _rewrite_single_section(s, title, seo_skill):
     prompt = (f"{seo_skill}\n---\nRewrite this section from \"{title}\" for SEO.\n"
               f"HEADING: {s['heading']}\nBODY: {s.get('body','')[:1500]}\n\n"
-              f"Return ONLY valid JSON:\n"
+              f"Return ONLY valid JSON. NEVER use a double-quote character \" "
+              f"inside a string value — use single quotes ' ' instead:\n"
               f"{{\"heading\":\"{s['heading']}\","
               f"\"paragraphs\":[\"Para 1\",\"Para 2\"],"
               f"\"image_prompt\":\"scene\",\"image_alt\":\"alt\",\"snippet\":\"answer\"}}")
@@ -3883,6 +4178,7 @@ def phase_images(structured: dict, url: str, db, out_dir: Path) -> dict:
                 time.sleep(inter_delay)
 
     inf(f"Images generated this run: [cyan]{generated_count}[/]")
+    _clear_quota_end_time()   # every image succeeded — quota is confirmed fine right now
     return {"feature": feat_dest, "sections": sec_paths}
 
 # ─────────────────────────────────────────────────────────────
@@ -4278,7 +4574,9 @@ def batch_summary(csv_path: Path, total: int, done: int, failed: int, elapsed: f
 # ─────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="Auto Content Pipeline — 24/7 Batch")
-    parser.add_argument("--csv",   default=None, help="Path to CSV file with URLs")
+    parser.add_argument("--csv",   default=None,
+                        help="Path to a local CSV file with URLs, or a Google Drive "
+                             "share link to a CSV shared across multiple PCs")
     parser.add_argument("--fresh", action="store_true", help="Wipe cached images/renders")
     parser.add_argument("--image-format", choices=list(IMAGE_FORMATS), default="webp",
                         help="Output format for generated/rendered images (default: webp)")
@@ -4330,17 +4628,40 @@ def main():
     seo_skill = ensure_seo_skill(CONFIG["skills_dir"])
     console.print()
 
-    # ── Get CSV path ─────────────────────────────────────────
+    # ── Get CSV path (local file, or a Google Drive share link) ─
     csv_path_str = args.csv
     if not csv_path_str:
         csv_path_str = Prompt.ask(
-            "  [bold cyan]Path to your CSV file (one URL per line)[/]",
+            "  [bold cyan]Path to your CSV file, or a Google Drive share link[/]",
             console=console)
+    csv_path_str = csv_path_str.strip()
 
-    csv_path = Path(csv_path_str.strip())
-    if not csv_path.exists():
-        err(f"CSV file not found: {csv_path}")
-        sys.exit(1)
+    drive_file_id = None
+    if _is_drive_link(csv_path_str):
+        drive_file_id = _drive_extract_file_id(csv_path_str)
+        csv_path = Path(CONFIG["output_dir"]) / "drive_synced_links.csv"
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        inf("Downloading CSV from Google Drive ...")
+        try:
+            drive_download_csv(drive_file_id, csv_path)
+        except Exception as e:
+            err(f"Could not download CSV from Google Drive: {e}")
+            sys.exit(1)
+        ok(f"Synced from Drive → [cyan]{csv_path}[/] "
+           f"[dim](this machine: {platform.node()})[/]")
+    else:
+        csv_path = Path(csv_path_str)
+        if not csv_path.exists():
+            err(f"CSV file not found: {csv_path}")
+            sys.exit(1)
+
+    def _drive_push():
+        """Push the local CSV back to Drive so other PCs see this machine's claim/result."""
+        if drive_file_id:
+            try:
+                drive_upload_csv(drive_file_id, csv_path)
+            except Exception as e:
+                warn(f"Could not sync CSV to Google Drive ({e}) — continuing with local copy.")
 
     all_rows = csv_load(csv_path)
     total_urls = len(all_rows)
@@ -4353,8 +4674,16 @@ def main():
 
     try:
         while True:
-            # Reload CSV each pass so we pick up any external edits
-            pending = csv_pending(csv_path)
+            # Reload CSV each pass — pulls the latest from Drive first (if
+            # configured) so we see claims/completions other PCs have made
+            if drive_file_id:
+                try:
+                    drive_download_csv(drive_file_id, csv_path)
+                except Exception as e:
+                    warn(f"Could not pull latest CSV from Google Drive ({e}) — "
+                         f"using last local copy.")
+
+            pending = csv_pending(csv_path, CONFIG["csv_pending_stale_hours"])
 
             if not pending:
                 console.print()
@@ -4370,6 +4699,11 @@ def main():
             if category:
                 inf(f"CSV category → [cyan]{category}[/]")
 
+            # Claim it immediately — announces "I'm working this" to any
+            # other PC sharing this CSV via Drive, before any real work starts
+            csv_claim_pending(csv_path, url)
+            _drive_push()
+
             result = run_one_url(url, seo_skill, fresh=args.fresh, category=category)
 
             if result == "done":
@@ -4378,17 +4712,15 @@ def main():
 
             elif result == "failed":
                 # 3 consecutive crashes — mark failed so we skip and move on
-                rows = csv_load(csv_path)
-                for row in rows:
-                    if row["url"] == url:
-                        row["status"] = "failed"
-                csv_save(csv_path, rows)
+                csv_mark_failed(csv_path, url)
                 warn(f"Marked as [red]failed[/] in CSV: {url}")
                 fail_count += 1
 
             # result == "retry" → URL stays pending; next loop iteration picks it up
             # (this path is never actually reached right now because run_one_url
             #  internally retries, but the hook is here for future use)
+
+            _drive_push()
 
             console.print()
             console.print(Rule(style="dim"))

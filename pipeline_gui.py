@@ -641,6 +641,10 @@ class ControlPanel(ctk.CTk):
                                       fg_color=COLORS["red"], hover_color=COLORS["red_hover"],
                                       command=self.on_stop)
         self.btn_stop.pack(side="left", padx=8)
+        self.btn_resume = ctk.CTkButton(actions, text="⏩  Resume Now", height=44, width=150,
+                                        fg_color=COLORS["amber"], state="disabled",
+                                        command=self.on_resume_now)
+        self.btn_resume.pack(side="left", padx=8)
         ctk.CTkButton(actions, text="⇪  Publish All Generated", height=44,
                       fg_color=COLORS["slate"], hover_color=COLORS["slate_hover"],
                       command=self.on_publish_all).pack(side="left", padx=8)
@@ -824,9 +828,11 @@ class ControlPanel(ctk.CTk):
 
         # Run
         run = self._card(s, "▶", "Run", "Pick the CSV of URLs to process (url,category,status)")
-        ctk.CTkLabel(run, text="CSV file of URLs", anchor="w", text_color=COLORS["text_dim"]).pack(fill="x")
+        ctk.CTkLabel(run, text="CSV file of URLs — or paste a Google Drive share link",
+                     anchor="w", text_color=COLORS["text_dim"]).pack(fill="x")
         csvrow = ctk.CTkFrame(run, fg_color="transparent"); csvrow.pack(fill="x", pady=(4, 8))
-        self.e_csv = ctk.CTkEntry(csvrow, height=36, placeholder_text="path to urls.csv",
+        self.e_csv = ctk.CTkEntry(csvrow, height=36,
+                                  placeholder_text="path to urls.csv, or a drive.google.com/... link",
                                   fg_color=COLORS["bg_alt"], border_color=COLORS["border"])
         self.e_csv.pack(side="left", fill="x", expand=True)
         if self.cfg.get("csv_path"):
@@ -978,6 +984,7 @@ class ControlPanel(ctk.CTk):
     def _set_running(self, running, tag=""):
         self._running = running
         self.btn_start.configure(state="disabled" if running else "normal")
+        self.btn_resume.configure(state="normal" if running else "disabled")
         if running:
             self.status_lbl.configure(text=f"Running · {tag}" if tag else "Running",
                                       text_color=COLORS["green"])
@@ -1092,7 +1099,7 @@ class ControlPanel(ctk.CTk):
         env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8", PIPELINE_CONFIG=CONFIG_PATH)
         try:
             self.proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace", bufsize=1, env=env, cwd=run_cwd)
         except FileNotFoundError as e:
             self._log(f"✗ Could not start: {e}\n"); self._set_running(False); return
@@ -1127,8 +1134,10 @@ class ControlPanel(ctk.CTk):
 
     def on_start(self):
         csv_path = self.e_csv.get().strip()
-        if not csv_path or not Path(csv_path).exists():
-            self._log("✗ Pick a valid CSV file first (Browse).\n"); return
+        is_drive_link = csv_path.lower().startswith(("http://", "https://")) and \
+                         ("drive.google.com" in csv_path or "docs.google.com" in csv_path)
+        if not csv_path or not (is_drive_link or Path(csv_path).exists()):
+            self._log("✗ Pick a valid CSV file (Browse) or paste a Google Drive share link first.\n"); return
         args = ["--csv", csv_path,
                 "--image-format", FORMAT_LABELS.get(self.format_menu.get(), "webp"),
                 "--resolution", self._resolve_resolution("image_resolution"),
@@ -1152,6 +1161,25 @@ class ControlPanel(ctk.CTk):
             self.proc.terminate()
             self._log("\n■ Stop requested — process terminating.\n")
             self._set_running(False)
+        else:
+            self._log("Nothing is running.\n")
+
+    def on_resume_now(self):
+        """
+        Signals a running pipeline to retry immediately instead of waiting
+        out the rest of a quota pause — sent over the subprocess's piped
+        stdin, which automation.py's quota_wait() polls for. Harmless if
+        the pipeline isn't currently in a quota wait (the signal is just
+        drained and ignored on the next one, if any).
+        """
+        if self.proc and self.proc.poll() is None and self.proc.stdin:
+            try:
+                self.proc.stdin.write("resume\n")
+                self.proc.stdin.flush()
+                self._log("\n⏩ Resume Now sent — if the pipeline is waiting on quota, "
+                          "it will retry immediately.\n")
+            except Exception as e:
+                self._log(f"✗ Could not send resume signal: {e}\n")
         else:
             self._log("Nothing is running.\n")
 

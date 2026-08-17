@@ -67,6 +67,15 @@ def build_app():
         shutil.rmtree(APP_DIR)
     APP_DIR.mkdir(parents=True, exist_ok=True)
 
+    # automation.py only pip-installs these lazily, the first time someone
+    # actually passes a Google Drive CSV link — so on a clean build machine
+    # they may not be installed yet. --collect-all below requires the
+    # package to be importable at build time, so make sure it is first.
+    for pkg, imp in [("google-auth", "google.auth"),
+                      ("google-auth-oauthlib", "google_auth_oauthlib"),
+                      ("google-api-python-client", "googleapiclient")]:
+        _ensure(pkg, imp)
+
     # 1) automation.exe — the pipeline itself (kept console: rich UI + prompts)
     # --collect-all newspaper/nltk sweeps in unrelated ML packages that happen to be
     # installed in this dev environment (torch, tensorflow, transformers, sklearn,
@@ -75,6 +84,9 @@ def build_app():
     # weight that bloats the exe past GitHub's release size limit. Exclude them.
     _pyinstaller(ROOT / "automation.py", "automation", windowed=False, distpath=APP_DIR,
                 extra=["--collect-all", "newspaper", "--collect-all", "nltk",
+                       "--collect-all", "googleapiclient",
+                       "--collect-all", "google_auth_oauthlib",
+                       "--collect-all", "google.auth",
                        "--exclude-module", "torch",
                        "--exclude-module", "torchvision",
                        "--exclude-module", "torchaudio",
