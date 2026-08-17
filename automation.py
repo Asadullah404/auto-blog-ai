@@ -2758,7 +2758,7 @@ from rich.prompt import Prompt
 from rich.rule import Rule
 from rich import box
 from jinja2 import Template
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageStat
 import cv2, numpy as np
 from bs4 import BeautifulSoup
 
@@ -2786,6 +2786,9 @@ CONFIG = {
     # ── Image delays ────────────────────────────────────────
     "img_inter_delay":    8,           # seconds between successful image calls
     "img_min_file_bytes": 5000,
+    "img_min_stddev":     4,           # reject flat/blank/grey frames below this pixel stddev
+    "img_max_retries":    3,           # attempts for a single image before treating as quota
+    "img_retry_delay":    15,          # seconds between same-image retry attempts
     # ── Image output format / resolution (overridden by CLI flags) ──
     "image_format":       "webp",      # "webp" | "jpeg"
     "image_quality":      88,
@@ -3707,12 +3710,27 @@ def _find_new_image(before: set, raw_output: str) -> Path | None:
         return max(new, key=lambda p: p.stat().st_size)
     return None
 
+def _is_blank_image(img: "Image.Image") -> bool:
+    """
+    Catches flat/grey/blank frames that pass the file-size check but aren't
+    real photos — e.g. a content-filtered request that still returns a
+    valid-but-empty image file. A real photo has meaningful pixel variance;
+    a blank/solid-color frame does not.
+    """
+    small = img.convert("RGB").resize((64, 64))
+    stat  = ImageStat.Stat(small)
+    return max(stat.stddev) < CONFIG["img_min_stddev"]
+
 def _copy_image_to_dest(img_path: Path, dest: Path) -> bool:
     try:
         if img_path.stat().st_size < CONFIG["img_min_file_bytes"]:
             warn(f"  Image too small ({img_path.stat().st_size}B) — rejecting")
             return False
-        _save_image(Image.open(img_path).convert("RGB"), dest)
+        img = Image.open(img_path).convert("RGB")
+        if _is_blank_image(img):
+            warn(f"  Image is flat/blank (not a real photo) — rejecting")
+            return False
+        _save_image(img, dest)
         return True
     except Exception as e:
         warn(f"  Image copy/validate failed: {e}")
@@ -3720,6 +3738,15 @@ def _copy_image_to_dest(img_path: Path, dest: Path) -> bool:
 
 def _generate_one_image(scene: str, slug: str, dest: Path, label: str,
                          db, url: str) -> bool:
+    """
+    Generates a single real image — never falls back to a blank placeholder.
+    If agy errors, produces no file, or produces a bad file, this retries
+    the same image up to img_max_retries times. If it still hasn't produced
+    a valid image, that's treated as quota exhaustion: QuotaExceededError
+    bubbles up so the caller waits (quota_wait) and this exact image is
+    re-attempted from scratch on resume — nothing is ever marked "done"
+    with a placeholder standing in for real art.
+    """
     img_key = f"img:{slug}"
 
     saved = db_img_done(db, url, img_key)
@@ -3730,36 +3757,61 @@ def _generate_one_image(scene: str, slug: str, dest: Path, label: str,
         ok(f"  {label} [dim]resumed from cache[/]")
         return True
 
-    before = _snapshot_brain()
-    prompt = AGY_IMG_PROMPT_TEMPLATE.format(slug=slug, scene=scene)
+    prompt      = AGY_IMG_PROMPT_TEMPLATE.format(slug=slug, scene=scene)
+    max_retries = CONFIG["img_max_retries"]
+    retry_delay = CONFIG["img_retry_delay"]
 
-    try:
-        raw = _run_agy(prompt, CONFIG["agy_img_timeout"])
-    except Exception as e:
-        warn(f"  agy error for {label}: {e} — using placeholder")
-        placeholder(dest, label, CONFIG["render_w"], CONFIG["render_h"])
-        return True
+    for attempt in range(1, max_retries + 1):
+        before = _snapshot_brain()
 
-    clean = _strip_ansi(raw)
+        try:
+            raw = _run_agy(prompt, CONFIG["agy_img_timeout"])
+        except Exception as e:
+            if _is_quota_error(str(e)):
+                raise QuotaExceededError(
+                    f"Imagen quota reached while generating: {label}"
+                )
+            warn(f"  agy error for {label} (attempt {attempt}/{max_retries}): {e}")
+            if attempt < max_retries:
+                time.sleep(retry_delay)
+                continue
+            raise QuotaExceededError(
+                f"Repeated agy failures generating {label} — "
+                f"treating as quota exhaustion, will wait and retry"
+            )
 
-    if _is_quota_error(clean):
+        clean = _strip_ansi(raw)
+
+        if _is_quota_error(clean):
+            raise QuotaExceededError(
+                f"Imagen quota reached while generating: {label}"
+            )
+
+        img_path = _find_new_image(before, clean)
+        if img_path is None:
+            warn(f"  No image file found for {label} (attempt {attempt}/{max_retries})")
+            if attempt < max_retries:
+                time.sleep(retry_delay)
+                continue
+            raise QuotaExceededError(
+                f"No image produced for {label} after {max_retries} attempts — "
+                f"treating as quota exhaustion, will wait and retry"
+            )
+
+        if _copy_image_to_dest(img_path, dest):
+            db_img_save(db, url, img_key, dest)
+            return True
+
+        warn(f"  Invalid image for {label} (attempt {attempt}/{max_retries})")
+        if attempt < max_retries:
+            time.sleep(retry_delay)
+            continue
         raise QuotaExceededError(
-            f"Imagen quota reached while generating: {label}"
+            f"Image validation kept failing for {label} — "
+            f"treating as quota exhaustion, will wait and retry"
         )
 
-    img_path = _find_new_image(before, clean)
-    if img_path is None:
-        warn(f"  No image file found for {label} — using placeholder")
-        placeholder(dest, label, CONFIG["render_w"], CONFIG["render_h"])
-        return True
-
-    if _copy_image_to_dest(img_path, dest):
-        db_img_save(db, url, img_key, dest)
-        return True
-
-    warn(f"  Invalid image for {label} — using placeholder")
-    placeholder(dest, label, CONFIG["render_w"], CONFIG["render_h"])
-    return True
+    return True  # unreachable — loop always returns or raises
 
 
 def phase_images(structured: dict, url: str, db, out_dir: Path) -> dict:
