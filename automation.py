@@ -2901,7 +2901,19 @@ def _img_path(directory: "Path", stem: str) -> "Path":
 
 # ── QUOTA EXCEPTION ──────────────────────────────────────────
 class QuotaExceededError(Exception):
-    """Raised when Imagen quota is hit — pipeline waits then resumes."""
+    """Raised ONLY when a real quota/rate-limit signal was actually seen
+    (matched by _is_quota_error) — pipeline waits then resumes."""
+    pass
+
+class ImageGenerationError(Exception):
+    """
+    Raised when image generation keeps failing for a reason that is NOT a
+    detected quota hit — e.g. agy itself erroring, or never producing a
+    file. Deliberately NOT treated as quota (no 6h wait): that would hide
+    the real problem behind a misleading "quota reached" message. Instead
+    this bubbles up to run_one_url's generic crash handler, which prints
+    the real cause and retries a few times before giving up on the URL.
+    """
     pass
 
 # ─────────────────────────────────────────────────────────────
@@ -3958,7 +3970,9 @@ AGY_BRAIN_ROOTS = [
 ]
 
 AGY_IMG_PROMPT_TEMPLATE = (
-    "Generate a photorealistic image and save it as {slug}.\n\n"
+    "Generate a photorealistic image and save it to this EXACT absolute file "
+    "path — create the file at exactly this location, do not choose a "
+    "different filename or folder:\n{path}\n\n"
     "Scene description:\n{scene}\n\n"
     "Requirements: ultra-photorealistic, cinematic lighting, sharp focus, "
     "professional photography quality, 16:9 landscape orientation, no text or watermarks."
@@ -4035,12 +4049,20 @@ def _generate_one_image(scene: str, slug: str, dest: Path, label: str,
                          db, url: str) -> bool:
     """
     Generates a single real image — never falls back to a blank placeholder.
-    If agy errors, produces no file, or produces a bad file, this retries
-    the same image up to img_max_retries times. If it still hasn't produced
-    a valid image, that's treated as quota exhaustion: QuotaExceededError
-    bubbles up so the caller waits (quota_wait) and this exact image is
-    re-attempted from scratch on resume — nothing is ever marked "done"
-    with a placeholder standing in for real art.
+
+    agy is told an exact absolute path to save to (expected_path), so finding
+    the result is a direct file-exists check first, not a guess — the old
+    behavior of scanning agy's ~/.gemini "brain" folders and regex-parsing
+    its printed output for a path is kept only as a fallback safety net for
+    the (rare) case agy doesn't honor the requested path.
+
+    A failure only becomes a quota wait (QuotaExceededError) when a real
+    quota/rate-limit signal was actually seen in agy's output or exception
+    text. Any other repeated failure — agy erroring for an unrelated reason,
+    or never producing a file even at the exact requested path — raises
+    ImageGenerationError instead, surfacing the *real* cause to the log and
+    letting run_one_url's normal crash-retry handle it, rather than lying
+    about quota and making the pipeline sit out a pointless 6h wait.
     """
     img_key = f"img:{slug}"
 
@@ -4052,12 +4074,17 @@ def _generate_one_image(scene: str, slug: str, dest: Path, label: str,
         ok(f"  {label} [dim]resumed from cache[/]")
         return True
 
-    prompt      = AGY_IMG_PROMPT_TEMPLATE.format(slug=slug, scene=scene)
-    max_retries = CONFIG["img_max_retries"]
-    retry_delay = CONFIG["img_retry_delay"]
+    expected_path = dest.parent / f"{slug}_src.png"
+    max_retries   = CONFIG["img_max_retries"]
+    retry_delay   = CONFIG["img_retry_delay"]
+    last_error    = None
 
     for attempt in range(1, max_retries + 1):
+        if expected_path.exists():
+            try: expected_path.unlink()
+            except Exception: pass
         before = _snapshot_brain()
+        prompt = AGY_IMG_PROMPT_TEMPLATE.format(scene=scene, path=expected_path)
 
         try:
             raw = _run_agy(prompt, CONFIG["agy_img_timeout"])
@@ -4066,13 +4093,14 @@ def _generate_one_image(scene: str, slug: str, dest: Path, label: str,
                 raise QuotaExceededError(
                     f"Imagen quota reached while generating: {label}"
                 )
+            last_error = str(e)
             warn(f"  agy error for {label} (attempt {attempt}/{max_retries}): {e}")
             if attempt < max_retries:
                 time.sleep(retry_delay)
                 continue
-            raise QuotaExceededError(
-                f"Repeated agy failures generating {label} — "
-                f"treating as quota exhaustion, will wait and retry"
+            raise ImageGenerationError(
+                f"agy kept failing to run while generating {label} "
+                f"(not a quota issue): {last_error}"
             )
 
         clean = _strip_ansi(raw)
@@ -4082,28 +4110,40 @@ def _generate_one_image(scene: str, slug: str, dest: Path, label: str,
                 f"Imagen quota reached while generating: {label}"
             )
 
-        img_path = _find_new_image(before, clean)
+        if expected_path.exists() and expected_path.stat().st_size > 1000:
+            img_path = expected_path
+        else:
+            img_path = _find_new_image(before, clean)   # fallback safety net
+
         if img_path is None:
-            warn(f"  No image file found for {label} (attempt {attempt}/{max_retries})")
+            last_error = clean[:300].strip() or "(agy produced no output)"
+            warn(f"  No image file found for {label} (attempt {attempt}/{max_retries}) "
+                 f"— expected at {expected_path}")
             if attempt < max_retries:
                 time.sleep(retry_delay)
                 continue
-            raise QuotaExceededError(
-                f"No image produced for {label} after {max_retries} attempts — "
-                f"treating as quota exhaustion, will wait and retry"
+            raise ImageGenerationError(
+                f"No image file appeared for {label} after {max_retries} attempts "
+                f"(expected at {expected_path}) — this is not a quota message, agy "
+                f"just isn't producing images right now. agy's last response: "
+                f"{last_error!r}. Try running `agy` manually with an image prompt "
+                f"to see what it actually does."
             )
 
         if _copy_image_to_dest(img_path, dest):
             db_img_save(db, url, img_key, dest)
+            if img_path == expected_path:
+                try: expected_path.unlink()
+                except Exception: pass
             return True
 
         warn(f"  Invalid image for {label} (attempt {attempt}/{max_retries})")
         if attempt < max_retries:
             time.sleep(retry_delay)
             continue
-        raise QuotaExceededError(
-            f"Image validation kept failing for {label} — "
-            f"treating as quota exhaustion, will wait and retry"
+        raise ImageGenerationError(
+            f"Image validation kept failing for {label} after {max_retries} "
+            f"attempts (file too small or flat/blank) — not a quota issue."
         )
 
     return True  # unreachable — loop always returns or raises
