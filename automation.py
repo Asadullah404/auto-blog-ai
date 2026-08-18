@@ -3499,7 +3499,14 @@ def _strip_ansi(s):
 def _run_agy(prompt: str, timeout: int) -> str:
     if BRIDGE_OK:
         from agy_headless_bridge import run as agy_run
-        result = agy_run(prompt, timeout=timeout)
+        # agy_headless_bridge does NOT add --dangerously-skip-permissions on
+        # its own (its own docs: "if agy pauses mid-run to ask for
+        # interactive approval, the prompt sits unanswered") — without this,
+        # every tool call needing approval (e.g. writing the generated image
+        # to disk) gets soft-denied in headless mode, which used to get
+        # misread as quota exhaustion. Must be passed explicitly here.
+        result = agy_run(prompt, timeout=timeout,
+                          extra_args=["--dangerously-skip-permissions"])
         if hasattr(result, "__iter__") and not isinstance(result, str):
             return "".join(c if isinstance(c, str) else str(c) for c in result)
         return result or ""
