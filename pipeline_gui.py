@@ -5,7 +5,9 @@ pipeline_gui.py  —  CONTROL PANEL for the Auto Content Pipeline
 A modern desktop control panel that sits on top of your pipeline.
 
   🏠 Dashboard  — live stats, progress, latest image, recent activity
-  ⚙  Settings   — WordPress connection, publishing switches, images, CSV
+  🔗 Sync       — sign in, upload a CSV of links, see live
+                  done/category status synced via Firestore
+  ⚙  Settings   — WordPress connection, publishing switches, images
   📜 Logs       — full colorized live log, export to file
   📰 Articles   — everything generated/published, with quick-open links
 
@@ -23,8 +25,8 @@ generate, then click "Publish All Generated".
 import os
 import re
 import sys
-import csv
 import json
+import time
 import queue
 import sqlite3
 import webbrowser
@@ -58,9 +60,13 @@ def _ensure(pkg, imp=None):
 
 ctk = _ensure("customtkinter")
 _ensure("Pillow", "PIL")
+_ensure("requests")
 import tkinter as tk
 from tkinter import filedialog
 from PIL import Image
+
+import firebase_auth
+import firestore_client as fs
 
 # Windows fractional display scaling (125%/150%) makes customtkinter apply its
 # own DPI correction on top of what Tk already gets from the OS, so widgets
@@ -80,7 +86,6 @@ DEFAULTS = {
     "auto_publish": True,        # AUTO ON by default
     "seo_plugin":   "rankmath",
     "alt_from":     "heading",
-    "csv_path":     "",
     "fresh":        False,
     "verify_ssl":   True,
     "image_format":         "webp",
@@ -187,42 +192,9 @@ def save_cfg(cfg):
 
 
 # ─────────────────────────────────────────────────────────────
-# Data helpers — CSV stats + pipeline_output scan (used by Dashboard/Articles)
+# Data helpers — pipeline_output scan (used by Dashboard/Articles).
+# Link/status stats now come from Firestore — see ControlPanel._dashboard_stats_worker.
 # ─────────────────────────────────────────────────────────────
-def _parse_csv_rows(path):
-    """Mirrors automation.py's csv_load() status/category heuristic."""
-    rows = []
-    try:
-        with open(path, newline="", encoding="utf-8") as f:
-            for raw in csv.reader(f):
-                if not raw:
-                    continue
-                url = raw[0].strip()
-                if not url or url.startswith("#"):
-                    continue
-                status = ""
-                if len(raw) >= 3:
-                    status = raw[2].strip().lower()
-                elif len(raw) == 2:
-                    second = raw[1].strip().lower()
-                    if second in ("done", "failed"):
-                        status = second
-                rows.append({"url": url, "status": status})
-    except Exception:
-        pass
-    return rows
-
-
-def _csv_stats(path):
-    if not path or not Path(path).exists():
-        return {"total": 0, "done": 0, "failed": 0, "pending": 0}
-    rows = _parse_csv_rows(path)
-    done = sum(1 for r in rows if r["status"] == "done")
-    failed = sum(1 for r in rows if r["status"] == "failed")
-    total = len(rows)
-    return {"total": total, "done": done, "failed": failed, "pending": total - done - failed}
-
-
 def _scan_pipeline_output(root="pipeline_output"):
     """Read every article's own pipeline_state.db. Returns (articles, published_count)."""
     articles, published = [], 0
@@ -400,6 +372,15 @@ class ControlPanel(ctk.CTk):
         self.log_q = queue.Queue()
         self._running = False
         self.res_pickers = {}   # cfg_key -> {"menu","e_w","e_h"}, filled by _resolution_picker
+        self._current_page = "Dashboard"
+        self._links_cache = []
+
+        # Firebase Auth / Firestore session — set once _enter_app() runs
+        self.profile  = None
+        self.id_token = None
+        self.uid      = None
+        self._pending_cfg_push = None  # settings saved before sign-in finished; flushed by _set_auth
+        self._fs_backoff_until = 0.0   # epoch time; polling pauses until past this (see _enter_fs_backoff)
 
         self.grid_columnconfigure(0, weight=0)
         self.grid_columnconfigure(1, weight=1)
@@ -411,15 +392,18 @@ class ControlPanel(ctk.CTk):
         self._build_sidebar()
         self._build_pages()
         self._build_footer()
+        self._build_signin_overlay()
 
         self._refresh_badges()
         self._log("Ready. Fill in your WordPress details, Save, then Start.\n")
         self.after(120, self._drain_log)
-        self.after(300, self._refresh_dashboard)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        if self._needs_setup():
-            self.after(250, self._show_setup_wizard)
+        cached_profile = firebase_auth.current_profile()
+        if cached_profile:
+            self._enter_app(cached_profile)
+        else:
+            self.signin_overlay.tkraise()
 
     def _needs_setup(self):
         return not (self.cfg.get("base_url") and self.cfg.get("username")
@@ -441,6 +425,199 @@ class ControlPanel(ctk.CTk):
             self._log("⚠ Skipped WordPress setup — add it anytime in Settings.\n")
             self._show_page("Settings")
 
+    # ── Sign-in (email/password) ────────────────────────────────
+    def _build_signin_overlay(self):
+        """A full-window overlay shown until the user is signed in — raised
+        above the header/sidebar/pages/footer (built just before this) via
+        tkraise(), the same mechanism _show_page() uses for page switching."""
+        ov = ctk.CTkFrame(self, corner_radius=0, fg_color=COLORS["bg"])
+        ov.grid(row=0, column=0, columnspan=2, rowspan=3, sticky="nsew")
+        ov.grid_columnconfigure(0, weight=1)
+        ov.grid_rowconfigure(0, weight=1)
+
+        card = ctk.CTkFrame(ov, corner_radius=16, fg_color=COLORS["card"],
+                            border_width=1, border_color=COLORS["border"], width=380)
+        card.grid(row=0, column=0)
+
+        ctk.CTkLabel(card, text="⚡", font=ctk.CTkFont(size=40)).pack(pady=(36, 8))
+        ctk.CTkLabel(card, text="Content Pipeline", font=ctk.CTkFont(size=20, weight="bold"),
+                    text_color=COLORS["text"]).pack()
+        ctk.CTkLabel(card, text="Sign in to sync your links and see live "
+                                "done/category status — no re-uploading needed.",
+                    font=ctk.CTkFont(size=12), text_color=COLORS["text_mute"],
+                    wraplength=300, justify="center").pack(pady=(6, 20), padx=30)
+
+        self.e_signin_email = ctk.CTkEntry(card, height=36, width=280, placeholder_text="Email",
+                                           fg_color=COLORS["bg_alt"], border_color=COLORS["border"])
+        self.e_signin_email.pack(pady=(0, 8))
+        self.e_signin_pass = ctk.CTkEntry(card, height=36, width=280, placeholder_text="Password",
+                                          show="•", fg_color=COLORS["bg_alt"], border_color=COLORS["border"])
+        self.e_signin_pass.pack(pady=(0, 14))
+        self.e_signin_pass.bind("<Return>", lambda e: self.on_sign_in())
+
+        btn_row = ctk.CTkFrame(card, fg_color="transparent")
+        btn_row.pack(pady=(0, 8))
+        self.signin_btn = ctk.CTkButton(btn_row, text="Sign In", height=40, width=133,
+                                        fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+                                        font=ctk.CTkFont(size=13, weight="bold"),
+                                        command=self.on_sign_in)
+        self.signin_btn.pack(side="left", padx=(0, 6))
+        self.signup_btn = ctk.CTkButton(btn_row, text="Create Account", height=40, width=133,
+                                        fg_color=COLORS["slate"], hover_color=COLORS["slate_hover"],
+                                        font=ctk.CTkFont(size=13, weight="bold"),
+                                        command=self.on_create_account)
+        self.signup_btn.pack(side="left", padx=(6, 0))
+
+        self.signin_status = ctk.CTkLabel(card, text="", font=ctk.CTkFont(size=11),
+                                          text_color=COLORS["amber"], wraplength=300, justify="center")
+        self.signin_status.pack(pady=(4, 30), padx=20)
+
+        self.signin_overlay = ov
+
+    def _signin_inputs(self):
+        email = self.e_signin_email.get().strip()
+        password = self.e_signin_pass.get()
+        if not email or not password:
+            self.signin_status.configure(text="Enter both an email and a password.",
+                                         text_color=COLORS["amber"])
+            return None, None
+        return email, password
+
+    def _set_signin_busy(self, busy, text_signin="Sign In", text_signup="Create Account"):
+        state = "disabled" if busy else "normal"
+        self.signin_btn.configure(state=state, text=text_signin)
+        self.signup_btn.configure(state=state, text=text_signup)
+
+    def on_sign_in(self):
+        email, password = self._signin_inputs()
+        if not email:
+            return
+        self.signin_status.configure(text="")
+        self._set_signin_busy(True, "Signing in…", "Create Account")
+        threading.Thread(target=self._sign_in_worker, args=(email, password), daemon=True).start()
+
+    def on_create_account(self):
+        email, password = self._signin_inputs()
+        if not email:
+            return
+        self.signin_status.configure(text="")
+        self._set_signin_busy(True, "Sign In", "Creating…")
+        threading.Thread(target=self._sign_up_worker, args=(email, password), daemon=True).start()
+
+    def _sign_in_worker(self, email, password):
+        try:
+            profile = firebase_auth.sign_in(email, password)
+        except Exception as e:
+            self.after(0, lambda: self._sign_in_failed(str(e)))
+            return
+        self.after(0, lambda: self._sign_in_succeeded(profile))
+
+    def _sign_up_worker(self, email, password):
+        try:
+            profile = firebase_auth.sign_up(email, password)
+        except Exception as e:
+            self.after(0, lambda: self._sign_in_failed(str(e)))
+            return
+        self.after(0, lambda: self._sign_in_succeeded(profile))
+
+    def _sign_in_failed(self, msg):
+        self._set_signin_busy(False)
+        self.signin_status.configure(text=msg, text_color=COLORS["amber"])
+
+    def _sign_in_succeeded(self, profile):
+        self._set_signin_busy(False)
+        self._enter_app(profile)
+
+    def on_sign_out(self):
+        firebase_auth.sign_out()
+        self.id_token = None
+        self.uid = None
+        self.profile = None
+        self.account_wrap.pack_forget()
+        self.e_signin_pass.delete(0, "end")
+        self._log("Signed out.\n")
+        self.signin_overlay.tkraise()
+
+    def _enter_app(self, profile):
+        """Called once we have a (possibly cached) signed-in profile — reveals
+        the app, shows the account chip, and starts the periodic auth refresh
+        + Firestore-backed polling loops."""
+        self.profile = profile
+        self.signin_overlay.grid_remove()
+        self._update_account_header(profile)
+        self._auth_tick()
+        if self._needs_setup():
+            self.after(250, self._show_setup_wizard)
+
+    def _auth_tick(self):
+        """Refreshes the Firebase ID token roughly every 45 min (tokens last
+        ~1h) and, on the very first call, kicks off the dashboard/Sync polling
+        loops now that we're signed in."""
+        first_call = not hasattr(self, "_auth_started")
+        self._auth_started = True
+        threading.Thread(target=self._auth_refresh_worker, daemon=True).start()
+        if first_call:
+            self.after(300, self._refresh_dashboard)
+            self.after(2000, self._sync_poll_tick)
+        self.after(45 * 60 * 1000, self._auth_tick)
+
+    def _auth_refresh_worker(self):
+        id_token, uid = firebase_auth.get_valid_id_token()
+        self.after(0, lambda: self._set_auth(id_token, uid))
+
+    def _set_auth(self, id_token, uid):
+        was_ready = bool(self.id_token and self.uid)
+        self.id_token = id_token
+        self.uid = uid
+        if not id_token:
+            self._log("⚠ Signed-in session expired — please sign in again.\n")
+            self.account_wrap.pack_forget()
+            self.signin_overlay.tkraise()
+            return
+        pending = getattr(self, "_pending_cfg_push", None)
+        if pending is not None:
+            # A Save happened before we were signed in — flush it now rather
+            # than letting the cloud-pull-on-first-sign-in below clobber the
+            # settings the user just tried to save with stale cloud data.
+            self._pending_cfg_push = None
+            self._cfg_pulled = True
+            self._push_cfg_to_cloud(pending)
+        elif not getattr(self, "_cfg_pulled", False):
+            self._cfg_pulled = True
+            threading.Thread(target=self._pull_cfg_worker, args=(uid, id_token), daemon=True).start()
+        if not was_ready:
+            # The account header/chip appears the instant sign-in succeeds, but
+            # id_token itself only lands here a moment later (it's fetched async
+            # in _auth_refresh_worker) — so the very first time it goes from "not
+            # ready" to "ready", push a refresh right away instead of leaving the
+            # Links table waiting on the next 10s poll tick.
+            self._refresh_links_table(force=True)
+
+    def _await_auth(self, on_ready, on_timeout=None, timeout_s=12, _elapsed=0.0):
+        """Polls for self.id_token/self.uid to become available and then calls
+        on_ready() — used so a click right after sign-in waits out the brief
+        async token fetch instead of dead-ending on a 'not signed in' error."""
+        if self.id_token and self.uid:
+            on_ready()
+            return
+        if _elapsed >= timeout_s:
+            if on_timeout:
+                on_timeout()
+            return
+        self.after(400, lambda: self._await_auth(on_ready, on_timeout, timeout_s, _elapsed + 0.4))
+
+    def _force_signin_overlay(self):
+        """Re-shows the sign-in overlay without discarding the cached session —
+        for when auth is genuinely stuck rather than just still connecting."""
+        self.account_wrap.pack_forget()
+        self.signin_overlay.tkraise()
+
+    def _update_account_header(self, profile):
+        name = profile.get("email") or "Signed in"
+        self.account_avatar.configure(text=(name[:1] or "?").upper())
+        self.account_name.configure(text=name)
+        self.account_wrap.pack(side="right", padx=(0, 16))
+
     # ── header ──────────────────────────────────────────────
     def _build_header(self):
         head = ctk.CTkFrame(self, corner_radius=0, height=64, fg_color=COLORS["bg_alt"])
@@ -459,6 +636,19 @@ class ControlPanel(ctk.CTk):
 
         right = ctk.CTkFrame(head, fg_color="transparent")
         right.pack(side="right", padx=20, pady=10)
+
+        self.account_wrap = ctk.CTkFrame(right, fg_color="transparent")
+        self.account_avatar = ctk.CTkLabel(self.account_wrap, text="?", width=28, height=28,
+                                           corner_radius=14, fg_color=COLORS["accent"],
+                                           text_color="#ffffff", font=ctk.CTkFont(size=12, weight="bold"))
+        self.account_avatar.pack(side="left", padx=(0, 8))
+        self.account_name = ctk.CTkLabel(self.account_wrap, text="", font=ctk.CTkFont(size=12, weight="bold"),
+                                         text_color=COLORS["text"])
+        self.account_name.pack(side="left", padx=(0, 8))
+        ctk.CTkButton(self.account_wrap, text="Sign out", width=70, height=24, fg_color="transparent",
+                     hover_color=COLORS["card_alt"], text_color=COLORS["text_mute"],
+                     font=ctk.CTkFont(size=11), command=self.on_sign_out).pack(side="left")
+        # not packed yet — _update_account_header() reveals it once signed in
 
         self.mode_badge = ctk.CTkLabel(
             right, text="", font=ctk.CTkFont(size=12, weight="bold"),
@@ -483,7 +673,7 @@ class ControlPanel(ctk.CTk):
 
         self.nav_btns = {}
         for i, (name, icon) in enumerate((
-            ("Dashboard", "🏠"), ("Settings", "⚙"), ("Logs", "📜"), ("Articles", "📰"),
+            ("Dashboard", "🏠"), ("Sync", "🔗"), ("Settings", "⚙"), ("Logs", "📜"), ("Articles", "📰"),
         )):
             b = ctk.CTkButton(
                 nav, text=f"   {icon}   {name}", anchor="w", height=42, corner_radius=8,
@@ -505,6 +695,7 @@ class ControlPanel(ctk.CTk):
         self.pages = {}
         for name, builder in (
             ("Dashboard", self._build_dashboard),
+            ("Sync",      self._build_sync_page),
             ("Settings",  self._build_settings_page),
             ("Logs",      self._build_logs_page),
             ("Articles",  self._build_articles_page),
@@ -526,12 +717,15 @@ class ControlPanel(ctk.CTk):
 
     def _show_page(self, name):
         self.pages[name].tkraise()
+        self._current_page = name
         for n, btn in self.nav_btns.items():
             active = n == name
             btn.configure(fg_color=COLORS["accent_soft"] if active else "transparent",
                          text_color=COLORS["text"] if active else COLORS["text_dim"])
         if name == "Articles":
             self._populate_articles(self.e_search.get() if hasattr(self, "e_search") else "")
+        elif name == "Sync":
+            self._refresh_links_table(force=True)
 
     # ── shared card helper ───────────────────────────────────
     def _card(self, parent, icon, title, subtitle=None):
@@ -549,22 +743,36 @@ class ControlPanel(ctk.CTk):
         body.pack(fill="x", padx=18, pady=(4, 18))
         return body
 
+    def _resolution_label_wh(self, stored_res, default_wh):
+        """Map a stored cfg value ('hd', '2k', '1280x720', ...) to the option-menu
+        label plus the width/height to show in the custom fields."""
+        stored_res = str(stored_res)
+        custom_match = _CUSTOM_RES_RE.match(stored_res)
+        if stored_res in RESOLUTION_LABELS_REV:
+            return RESOLUTION_LABELS_REV[stored_res], default_wh[0], default_wh[1]
+        if custom_match:
+            return "Custom…", custom_match.group(1), custom_match.group(2)
+        return "HD  (1200×675)", default_wh[0], default_wh[1]
+
+    def _apply_resolution(self, cfg_key, stored_res, default_wh=("1000", "1000")):
+        """Push a stored cfg value into an already-built resolution picker —
+        used when settings arrive from the cloud after the page was built."""
+        picker = self.res_pickers.get(cfg_key)
+        if not picker:
+            return
+        label, w, h = self._resolution_label_wh(stored_res, default_wh)
+        picker["menu"].set(label)
+        picker["e_w"].delete(0, "end"); picker["e_w"].insert(0, w)
+        picker["e_h"].delete(0, "end"); picker["e_h"].insert(0, h)
+        self._on_resolution_change(cfg_key, label)
+
     def _resolution_picker(self, parent, label, cfg_key, default_wh=("1000", "1000")):
         """Build a resolution dropdown (+ custom W/H fields) bound to self.cfg[cfg_key].
         Stores the widgets in self.res_pickers[cfg_key] and returns that dict."""
         ctk.CTkLabel(parent, text=label, anchor="w", text_color=COLORS["text_dim"]).pack(fill="x")
 
-        stored_res = str(self.cfg.get(cfg_key, "hd"))
-        custom_match = _CUSTOM_RES_RE.match(stored_res)
-        if stored_res in RESOLUTION_LABELS_REV:
-            initial_label = RESOLUTION_LABELS_REV[stored_res]
-            init_w, init_h = default_wh
-        elif custom_match:
-            initial_label = "Custom…"
-            init_w, init_h = custom_match.group(1), custom_match.group(2)
-        else:
-            initial_label = "HD  (1200×675)"
-            init_w, init_h = default_wh
+        initial_label, init_w, init_h = self._resolution_label_wh(
+            self.cfg.get(cfg_key, "hd"), default_wh)
 
         menu = ctk.CTkOptionMenu(parent, values=list(RESOLUTION_LABELS.keys()),
                                  command=lambda choice, k=cfg_key: self._on_resolution_change(k, choice))
@@ -710,21 +918,34 @@ class ControlPanel(ctk.CTk):
         self.stat_vals[key] = val
         return card
 
+    def _is_quota_error(self, e) -> bool:
+        s = str(e)
+        return "429" in s or "RESOURCE_EXHAUSTED" in s
+
+    def _enter_fs_backoff(self, seconds=600):
+        """Pauses background Firestore polling for a while and logs it once
+        (throttled) instead of retrying every few seconds and spamming the
+        log — used when Firestore returns 429 RESOURCE_EXHAUSTED, i.e. the
+        project's free-tier daily read quota is used up for today."""
+        self._fs_backoff_until = time.time() + seconds
+        if time.time() - getattr(self, "_fs_quota_last_log", 0) > 60:
+            self._fs_quota_last_log = time.time()
+            self.log_q.put(
+                f"⚠ Firebase's free-tier daily read quota was hit — pausing live "
+                f"sync for {seconds // 60} min, then it'll retry automatically. "
+                f"This is a Firebase project-wide quota, not a problem with your "
+                f"links (see console.cloud.google.com to raise it if this keeps happening).\n")
+
+    def _fs_backing_off(self) -> bool:
+        return time.time() < getattr(self, "_fs_backoff_until", 0)
+
     def _refresh_dashboard(self):
-        csv_path = self.e_csv.get().strip() if hasattr(self, "e_csv") else self.cfg.get("csv_path", "")
-        stats = _csv_stats(csv_path)
+        if self.id_token and self.uid and not self._fs_backing_off():
+            threading.Thread(target=self._dashboard_stats_worker,
+                             args=(self.uid, self.id_token), daemon=True).start()
+
         articles, published = _scan_pipeline_output()
-
-        self.stat_vals["total"].configure(text=str(stats["total"]))
-        self.stat_vals["pending"].configure(text=str(stats["pending"]))
-        self.stat_vals["done"].configure(text=str(stats["done"]))
-        self.stat_vals["failed"].configure(text=str(stats["failed"]))
         self.stat_vals["published"].configure(text=str(published))
-
-        frac = (stats["done"] / stats["total"]) if stats["total"] else 0
-        self.progress_bar.set(frac)
-        self.progress_pct_lbl.configure(text=f"{frac*100:.0f}%  ({stats['done']}/{stats['total']})")
-
         latest_thumb = next((a["thumb"] for a in articles if a.get("thumb")), None)
         img = _load_thumb(latest_thumb, (420, 220))
         if img:
@@ -733,7 +954,179 @@ class ControlPanel(ctk.CTk):
         else:
             self.thumb_label.configure(image=None, text="No images generated yet")
 
-        self.after(5000, self._refresh_dashboard)
+        self.after(20000, self._refresh_dashboard)
+
+    def _dashboard_stats_worker(self, uid, id_token):
+        try:
+            stats = fs.get_stats(uid, id_token)
+        except Exception as e:
+            if self._is_quota_error(e):
+                self._enter_fs_backoff()
+            else:
+                self.log_q.put(f"⚠ Could not refresh stats from Firestore: {e}\n")
+            return
+        self.after(0, lambda: self._apply_dashboard_stats(stats))
+
+    def _apply_dashboard_stats(self, stats):
+        self.stat_vals["total"].configure(text=str(stats["total"]))
+        self.stat_vals["pending"].configure(text=str(stats["pending"]))
+        self.stat_vals["done"].configure(text=str(stats["done"]))
+        self.stat_vals["failed"].configure(text=str(stats["failed"]))
+        frac = (stats["done"] / stats["total"]) if stats["total"] else 0
+        self.progress_bar.set(frac)
+        self.progress_pct_lbl.configure(text=f"{frac*100:.0f}%  ({stats['done']}/{stats['total']})")
+
+    # ── SYNC (signed-in CSV upload + live links table) ─────
+    def _build_sync_page(self, page):
+        page.grid_rowconfigure(2, weight=1)
+        page.grid_columnconfigure(0, weight=1)
+
+        top = ctk.CTkFrame(page, corner_radius=12, fg_color=COLORS["card"],
+                           border_width=1, border_color=COLORS["border"])
+        top.grid(row=0, column=0, sticky="ew", padx=24, pady=(20, 8))
+        head = ctk.CTkFrame(top, fg_color="transparent"); head.pack(fill="x", padx=18, pady=(16, 4))
+        ctk.CTkLabel(head, text="⬆  Upload CSV", font=ctk.CTkFont(size=15, weight="bold"),
+                    text_color=COLORS["text"]).pack(anchor="w")
+        ctk.CTkLabel(head, text="Adds/updates links for your signed-in account (url,category,status). "
+                                "Re-uploading the same file never overwrites a link's existing "
+                                "done/failed status unless the file explicitly says so.",
+                    font=ctk.CTkFont(size=11), text_color=COLORS["text_mute"],
+                    wraplength=820, justify="left").pack(anchor="w", pady=(2, 0))
+        body = ctk.CTkFrame(top, fg_color="transparent"); body.pack(fill="x", padx=18, pady=(4, 18))
+        ctk.CTkButton(body, text="Choose CSV…", height=36, width=140, fg_color=COLORS["accent"],
+                     hover_color=COLORS["accent_hover"], command=self.on_upload_csv).pack(side="left")
+        self.sync_status_lbl = ctk.CTkLabel(body, text="", text_color=COLORS["text_mute"])
+        self.sync_status_lbl.pack(side="left", padx=(12, 0))
+        self.sync_signin_btn = ctk.CTkButton(body, text="Sign in", height=28, width=80,
+                                             fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+                                             command=self._force_signin_overlay)
+
+        bar = ctk.CTkFrame(page, fg_color="transparent")
+        bar.grid(row=1, column=0, sticky="ew", padx=24, pady=(8, 8))
+        ctk.CTkLabel(bar, text="🔗  Links", font=ctk.CTkFont(size=16, weight="bold"),
+                    text_color=COLORS["text"]).pack(side="left")
+        self.links_count_lbl = ctk.CTkLabel(bar, text="", text_color=COLORS["text_mute"])
+        self.links_count_lbl.pack(side="left", padx=12)
+        ctk.CTkButton(bar, text="🔄", width=36, height=28, fg_color=COLORS["slate"],
+                     hover_color=COLORS["slate_hover"],
+                     command=lambda: self._refresh_links_table(force=True)).pack(side="right")
+        self.e_links_search = ctk.CTkEntry(bar, width=240, placeholder_text="Filter by URL or category…",
+                                           fg_color=COLORS["bg_alt"], border_color=COLORS["border"])
+        self.e_links_search.pack(side="right", padx=(6, 6))
+        self.e_links_search.bind("<KeyRelease>", lambda e: self._render_links_table())
+
+        self.links_list = ctk.CTkScrollableFrame(page, corner_radius=0, fg_color=COLORS["bg"])
+        self.links_list.grid(row=2, column=0, sticky="nsew", padx=24, pady=(0, 20))
+        self.links_list.grid_columnconfigure(0, weight=1)
+
+    def on_upload_csv(self):
+        self.sync_signin_btn.pack_forget()
+        if not (self.id_token and self.uid):
+            self.sync_status_lbl.configure(text="Connecting to your account…", text_color=COLORS["text_mute"])
+            self._await_auth(self.on_upload_csv, on_timeout=self._csv_signin_timeout)
+            return
+        self.sync_status_lbl.configure(text="")
+        path = filedialog.askopenfilename(
+            title="Choose your CSV of URLs",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
+        if not path:
+            return
+        self.sync_status_lbl.configure(text="Uploading…", text_color=COLORS["text_mute"])
+        threading.Thread(target=self._upload_csv_worker, args=(path,), daemon=True).start()
+
+    def _csv_signin_timeout(self):
+        self.sync_status_lbl.configure(text="Still not signed in.", text_color=COLORS["amber"])
+        self.sync_signin_btn.pack(side="left", padx=(8, 0))
+
+    def _upload_csv_worker(self, path):
+        cmd, run_dir = self._tool_cmd("automation", ["--import-csv", path])
+        if not cmd:
+            self.after(0, lambda: self.sync_status_lbl.configure(
+                text="✗ automation not found (script or .exe).", text_color=COLORS["red"]))
+            return
+        try:
+            result = subprocess.run(cmd, cwd=run_dir, capture_output=True, text=True,
+                                    encoding="utf-8", errors="replace", timeout=300)
+        except Exception as e:
+            self.after(0, lambda: self.sync_status_lbl.configure(text=f"✗ {e}", text_color=COLORS["red"]))
+            return
+        output = (result.stdout or "") + (result.stderr or "")
+        self.log_q.put(output)
+        succeeded = result.returncode == 0
+        lines = [l.strip() for l in output.splitlines() if l.strip()]
+        summary = lines[-1] if lines else ("Import complete." if succeeded else "Import failed.")
+        color = COLORS["green"] if succeeded else COLORS["red"]
+        self.after(0, lambda: self.sync_status_lbl.configure(text=summary, text_color=color))
+        self.after(0, lambda: self._refresh_links_table(force=True))
+
+    def _sync_poll_tick(self):
+        if self._current_page == "Sync" and self.id_token and self.uid and not self._fs_backing_off():
+            self._refresh_links_table()
+        self.after(25000, self._sync_poll_tick)
+
+    def _refresh_links_table(self, force=False):
+        if not (self.id_token and self.uid):
+            return
+        if self._fs_backing_off() and not force:
+            return
+        threading.Thread(target=self._links_worker, args=(self.uid, self.id_token), daemon=True).start()
+
+    def _links_worker(self, uid, id_token):
+        try:
+            rows = fs.run_query(uid, id_token, order_by="updatedAt", descending=True, limit=500)
+        except Exception as e:
+            if self._is_quota_error(e):
+                self._enter_fs_backoff()
+            else:
+                self.log_q.put(f"⚠ Could not load links from Firestore: {e}\n")
+            return
+        self.after(0, lambda: self._set_links_cache(rows))
+
+    def _set_links_cache(self, rows):
+        self._links_cache = rows
+        self._render_links_table()
+
+    def _render_links_table(self):
+        for w in self.links_list.winfo_children():
+            w.destroy()
+        ft = self.e_links_search.get().strip().lower() if hasattr(self, "e_links_search") else ""
+        rows = self._links_cache
+        if ft:
+            rows = [r for r in rows if ft in (r.get("url") or "").lower()
+                   or ft in (r.get("category") or "").lower()]
+        self.links_count_lbl.configure(text=f"{len(rows)} link(s)")
+        if not rows:
+            ctk.CTkLabel(self.links_list,
+                        text="No links yet — upload a CSV above to get started.",
+                        text_color=COLORS["text_mute"]).grid(row=0, column=0, pady=40)
+            return
+        for i, r in enumerate(rows):
+            self._link_row(self.links_list, r).grid(row=i, column=0, sticky="ew", pady=3)
+
+    _STATUS_STYLE = {
+        "done":    ("green", "#ffffff"),
+        "failed":  ("red", "#ffffff"),
+        "claimed": ("amber", "#1a1400"),
+        "pending": ("slate", "#e5e7eb"),
+    }
+
+    def _link_row(self, parent, r):
+        status = r.get("status") or "pending"
+        row = ctk.CTkFrame(parent, corner_radius=8, fg_color=COLORS["card"],
+                           border_width=1, border_color=COLORS["border"])
+        row.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(row, text=r.get("url") or "", anchor="w", font=ctk.CTkFont(size=12),
+                    text_color=COLORS["text"], wraplength=560, justify="left").grid(
+                        row=0, column=0, sticky="w", padx=(14, 6), pady=(10, 2))
+        ctk.CTkLabel(row, text=r.get("category") or "Uncategorized", anchor="w",
+                    font=ctk.CTkFont(size=11), text_color=COLORS["text_mute"]).grid(
+                        row=1, column=0, sticky="w", padx=(14, 6), pady=(0, 10))
+        fg_key, text_color = self._STATUS_STYLE.get(status, self._STATUS_STYLE["pending"])
+        ctk.CTkLabel(row, text=status.capitalize(), fg_color=COLORS[fg_key], text_color=text_color,
+                    corner_radius=8, padx=10, pady=4,
+                    font=ctk.CTkFont(size=10, weight="bold")).grid(
+                        row=0, column=1, rowspan=2, sticky="e", padx=14)
+        return row
 
     # ── SETTINGS ──────────────────────────────────────────────
     def _build_settings_page(self, page):
@@ -827,18 +1220,7 @@ class ControlPanel(ctk.CTk):
         self._on_pinterest_toggle()
 
         # Run
-        run = self._card(s, "▶", "Run", "Pick the CSV of URLs to process (url,category,status)")
-        ctk.CTkLabel(run, text="CSV file of URLs — or paste a Google Drive share link",
-                     anchor="w", text_color=COLORS["text_dim"]).pack(fill="x")
-        csvrow = ctk.CTkFrame(run, fg_color="transparent"); csvrow.pack(fill="x", pady=(4, 8))
-        self.e_csv = ctk.CTkEntry(csvrow, height=36,
-                                  placeholder_text="path to urls.csv, or a drive.google.com/... link",
-                                  fg_color=COLORS["bg_alt"], border_color=COLORS["border"])
-        self.e_csv.pack(side="left", fill="x", expand=True)
-        if self.cfg.get("csv_path"):
-            self.e_csv.insert(0, self.cfg["csv_path"])
-        ctk.CTkButton(csvrow, text="Browse", width=80, command=self.on_browse).pack(side="right", padx=(6, 0))
-
+        run = self._card(s, "▶", "Run", "Links to process come from the Sync page (Firestore), not a local file")
         self.fresh_var = tk.BooleanVar(value=bool(self.cfg.get("fresh", False)))
         ctk.CTkCheckBox(run, text="Fresh run (wipe cached images / renders)",
                         variable=self.fresh_var).pack(fill="x", pady=(2, 0))
@@ -1010,7 +1392,6 @@ class ControlPanel(ctk.CTk):
             "auto_publish": bool(self.auto_var.get()),
             "seo_plugin":   SEO_LABELS.get(self.seo_menu.get(), "rankmath"),
             "alt_from":     ALT_LABELS.get(self.alt_menu.get(), "heading"),
-            "csv_path":     self.e_csv.get().strip(),
             "fresh":        bool(self.fresh_var.get()),
             "verify_ssl":   self.cfg.get("verify_ssl", True),
             "image_format":         FORMAT_LABELS.get(self.format_menu.get(), "webp"),
@@ -1022,9 +1403,78 @@ class ControlPanel(ctk.CTk):
             "pinterest_pin":        bool(self.pinterest_var.get()),
         }
 
+    def _apply_cfg_to_widgets(self, cfg):
+        """Push a cfg dict (e.g. just pulled from Firestore) into the already-built
+        Settings widgets, mirroring how _build_settings_page seeds them initially."""
+        self.cfg = cfg
+        self.e_url.delete(0, "end");  self.e_url.insert(0, cfg.get("base_url", ""))
+        self.e_user.delete(0, "end"); self.e_user.insert(0, cfg.get("username", ""))
+        self.e_pass.delete(0, "end"); self.e_pass.insert(0, cfg.get("app_password", ""))
+        self.live_var.set(cfg.get("status") == "publish")
+        self.auto_var.set(bool(cfg.get("auto_publish", True)))
+        self.seo_menu.set(SEO_LABELS_REV.get(cfg.get("seo_plugin", "rankmath"), "Rank Math (free)"))
+        self.alt_menu.set(ALT_LABELS_REV.get(cfg.get("alt_from", "heading"), "Section heading"))
+        self.format_menu.set(FORMAT_LABELS_REV.get(cfg.get("image_format", "webp"), "WebP (smaller files)"))
+        self.fresh_var.set(bool(cfg.get("fresh", False)))
+        self.heading_text_var.set(bool(cfg.get("heading_text_overlay", True)))
+        self.feature_text_var.set(bool(cfg.get("feature_text_overlay", False)))
+        self.pinterest_var.set(bool(cfg.get("pinterest_pin", False)))
+        self._apply_resolution("image_resolution", cfg.get("image_resolution", "hd"))
+        self._apply_resolution("feature_resolution", cfg.get("feature_resolution", "hd"))
+        self._apply_resolution("pin_resolution", cfg.get("pin_resolution", "1000x1500"),
+                               default_wh=("1000", "1500"))
+        self._on_pinterest_toggle()
+        self._refresh_badges()
+
+    def _push_cfg_to_cloud(self, cfg=None):
+        """Fire-and-forget sync of the current settings up to Firestore, so
+        other devices signed into the same account pick them up.
+
+        If we're not signed in yet (e.g. the app just launched and the async
+        token refresh hasn't landed), the snapshot used to be dropped on the
+        floor with no feedback at all — Settings would show "Saved" locally
+        while never reaching the cloud. Now it's stashed and flushed by
+        _set_auth() the moment auth becomes ready."""
+        cfg_snapshot = dict(cfg if cfg is not None else self.cfg)
+        if not (self.id_token and self.uid):
+            self._pending_cfg_push = cfg_snapshot
+            self.log_q.put("⚠ Not signed in yet — settings saved locally, will sync to "
+                           "the cloud once connected.\n")
+            return
+        threading.Thread(target=self._push_cfg_worker,
+                         args=(self.uid, self.id_token, cfg_snapshot), daemon=True).start()
+
+    def _push_cfg_worker(self, uid, id_token, cfg):
+        try:
+            fs.save_config(uid, id_token, cfg)
+            self.log_q.put("☁ Settings synced to the cloud.\n")
+        except Exception as e:
+            self.log_q.put(f"⚠ Could not sync settings to the cloud: {e}\n")
+
+    def _pull_cfg_worker(self, uid, id_token):
+        """Runs once, right after the first successful sign-in — pulls whatever
+        settings were last saved to this account and applies them locally, so a
+        second device inherits the same WordPress/publishing config."""
+        try:
+            cloud_cfg = fs.get_config(uid, id_token)
+        except Exception as e:
+            self.log_q.put(f"⚠ Could not load settings from the cloud: {e}\n")
+            return
+        if cloud_cfg:
+            merged = dict(DEFAULTS)
+            merged.update(cloud_cfg)
+            save_cfg(merged)
+            self.after(0, lambda: self._apply_cfg_to_widgets(merged))
+            self.log_q.put("☁ Settings synced from the cloud.\n")
+        else:
+            # Nothing saved to this account yet — seed the cloud from whatever
+            # is on disk right now (a fresh install, or a first-time sign-in).
+            self._push_cfg_to_cloud()
+
     def _save(self):
         self.cfg = self.collect_cfg()
         save_cfg(self.cfg)
+        self._push_cfg_to_cloud()
 
     def _flash(self, btn, text, color, revert_text, revert_color, ms=1400):
         btn.configure(text=text, fg_color=color)
@@ -1114,13 +1564,6 @@ class ControlPanel(ctk.CTk):
         self.after(200, self._refresh_dashboard)
 
     # ── button actions ─────────────────────────────────────
-    def on_browse(self):
-        path = filedialog.askopenfilename(
-            title="Choose your CSV of URLs",
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
-        if path:
-            self.e_csv.delete(0, "end"); self.e_csv.insert(0, path)
-
     def on_save(self):
         self._save()
         self._log("💾 Settings saved to " + CONFIG_PATH + "\n")
@@ -1133,13 +1576,11 @@ class ControlPanel(ctk.CTk):
         self._run(cmd, tag="connection test", target_dir=run_dir)
 
     def on_start(self):
-        csv_path = self.e_csv.get().strip()
-        is_drive_link = csv_path.lower().startswith(("http://", "https://")) and \
-                         ("drive.google.com" in csv_path or "docs.google.com" in csv_path)
-        if not csv_path or not (is_drive_link or Path(csv_path).exists()):
-            self._log("✗ Pick a valid CSV file (Browse) or paste a Google Drive share link first.\n"); return
-        args = ["--csv", csv_path,
-                "--image-format", FORMAT_LABELS.get(self.format_menu.get(), "webp"),
+        if not (self.id_token and self.uid):
+            self._log("⏳ Connecting to your account…\n")
+            self._await_auth(self.on_start, on_timeout=self._start_signin_timeout)
+            return
+        args = ["--image-format", FORMAT_LABELS.get(self.format_menu.get(), "webp"),
                 "--resolution", self._resolve_resolution("image_resolution"),
                 "--feature-resolution", self._resolve_resolution("feature_resolution"),
                 "--pin-resolution", self._resolve_resolution("pin_resolution")]
@@ -1155,6 +1596,10 @@ class ControlPanel(ctk.CTk):
         if not cmd:
             self._log("✗ automation not found (script or .exe).\n"); return
         self._run(cmd, tag="pipeline", target_dir=run_dir)
+
+    def _start_signin_timeout(self):
+        self._log("✗ Still not signed in — showing the sign-in screen again.\n")
+        self._force_signin_overlay()
 
     def on_stop(self):
         if self.proc and self.proc.poll() is None:

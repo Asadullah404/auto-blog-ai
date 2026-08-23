@@ -2,7 +2,13 @@
 .env
 pipeline_config.json
 
-# Google Drive OAuth — never commit these either
+# Firebase — never commit these either
+firebase_config.json
+firebase_session.json
+
+# Leftover from earlier Google OAuth experiments — no longer used by the
+# app (sign-in is email/password now), but keep ignored as a safety net
+# in case old copies still exist on disk.
 credentials.json
 token.json
 
@@ -18,6 +24,7 @@ __pycache__/
 
 # PyInstaller build output
 build_output/
+Test/
 
 # Local Claude Code tool settings
 .claude/

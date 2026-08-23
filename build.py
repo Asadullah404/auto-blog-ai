@@ -15,11 +15,13 @@ This is a big build (opencv, lxml, newspaper, customtkinter all get bundled),
 so expect it to take several minutes and produce several hundred MB of output.
 Windows only.
 """
+import json
 import os
 import sys
 import shutil
 import subprocess
 import importlib
+import importlib.util
 from pathlib import Path
 
 if sys.platform != "win32":
@@ -27,7 +29,7 @@ if sys.platform != "win32":
     sys.exit(1)
 
 ROOT     = Path(__file__).parent.resolve()
-OUT      = ROOT / "build_output"
+OUT      = ROOT / os.environ.get("BUILD_OUTPUT_DIR", "build_output")
 APP_DIR  = OUT / "ContentPipeline"
 APP_NAME = "ContentPipeline"
 
@@ -62,19 +64,46 @@ def _pyinstaller(entry: Path, name: str, windowed: bool, distpath: Path, extra=N
     subprocess.run(cmd, check=True, cwd=ROOT)
 
 
+def _winpty_binary_args() -> list:
+    """
+    `winpty` (pulled in by agy_headless_bridge on Windows) ships two native
+    helper executables — OpenConsole.exe (ConPTY backend) and
+    winpty-agent.exe (legacy backend) — that its compiled _winpty extension
+    spawns at runtime by looking next to itself. Nothing imports them as
+    Python modules, so PyInstaller's automatic dependency scan never finds
+    them: it only picks up conpty.dll/winpty.dll/_winpty*.pyd because those
+    are linked binaries. Without these two .exe files, every pseudo-console
+    spawn silently produces zero captured output — agy runs to completion in
+    a black hole and the frozen app sees nothing, even though the exact same
+    code works fine unfrozen (site-packages/winpty has both files sitting
+    right there). Bundle them explicitly, next to the auto-detected DLLs
+    (same "winpty" destination folder), so the frozen exe has what the
+    extension expects to find beside it.
+    """
+    try:
+        spec = importlib.util.find_spec("winpty")
+    except (ImportError, ValueError):
+        spec = None
+    if not spec or not spec.origin:
+        print("  ⚠  winpty package not found — agy calls will likely fail in the frozen exe.")
+        return []
+    pkg_dir = Path(spec.origin).parent
+    args = []
+    for name in ("OpenConsole.exe", "winpty-agent.exe"):
+        src = pkg_dir / name
+        if src.exists():
+            args += ["--add-binary", f"{src}{os.pathsep}winpty"]
+        else:
+            print(f"  ⚠  {src} not found — agy calls will likely fail in the frozen exe.")
+    return args
+
+
 def build_app():
     if APP_DIR.exists():
         shutil.rmtree(APP_DIR)
     APP_DIR.mkdir(parents=True, exist_ok=True)
 
-    # automation.py only pip-installs these lazily, the first time someone
-    # actually passes a Google Drive CSV link — so on a clean build machine
-    # they may not be installed yet. --collect-all below requires the
-    # package to be importable at build time, so make sure it is first.
-    for pkg, imp in [("google-auth", "google.auth"),
-                      ("google-auth-oauthlib", "google_auth_oauthlib"),
-                      ("google-api-python-client", "googleapiclient")]:
-        _ensure(pkg, imp)
+    _assert_no_service_account_keys()
 
     # 1) automation.exe — the pipeline itself (kept console: rich UI + prompts)
     # --collect-all newspaper/nltk sweeps in unrelated ML packages that happen to be
@@ -84,9 +113,6 @@ def build_app():
     # weight that bloats the exe past GitHub's release size limit. Exclude them.
     _pyinstaller(ROOT / "automation.py", "automation", windowed=False, distpath=APP_DIR,
                 extra=["--collect-all", "newspaper", "--collect-all", "nltk",
-                       "--collect-all", "googleapiclient",
-                       "--collect-all", "google_auth_oauthlib",
-                       "--collect-all", "google.auth",
                        "--exclude-module", "torch",
                        "--exclude-module", "torchvision",
                        "--exclude-module", "torchaudio",
@@ -109,7 +135,7 @@ def build_app():
                        "--exclude-module", "nvidia",
                        "--exclude-module", "triton",
                        "--exclude-module", "graphviz",
-                       "--exclude-module", "lief"])
+                       "--exclude-module", "lief"] + _winpty_binary_args())
 
     # 2) wordpress_publisher.exe — standalone publisher / connection test
     _pyinstaller(ROOT / "wordpress_publisher.py", "wordpress_publisher",
@@ -119,10 +145,16 @@ def build_app():
     _pyinstaller(ROOT / "pipeline_gui.py", "ContentPipeline", windowed=True, distpath=APP_DIR,
                 extra=["--collect-all", "customtkinter"])
 
-    # Support files the running app expects to find next to it
-    for name in ("Skills", "rank-math-rest-meta.php", "README_SETUP.md"):
+    # Support files the running app expects to find next to it. firebase_config.json
+    # (public web config — see firebase_config.example.json for why this isn't
+    # a secret) must ship with every install so end users can sign in.
+    for name in ("Skills", "rank-math-rest-meta.php", "README_SETUP.md",
+                "firebase_config.json"):
         src = ROOT / name
         if not src.exists():
+            if name == "firebase_config.json":
+                print(f"  ⚠  {name} not found — sign-in won't work in this build. "
+                      f"See firebase_config.example.json / README.md.")
             continue
         dst = APP_DIR / name
         if src.is_dir():
@@ -131,6 +163,34 @@ def build_app():
             shutil.copy2(src, dst)
 
     print(f"\nApp bundle ready -> {APP_DIR}")
+
+
+def _assert_no_service_account_keys():
+    """
+    Build-time guard: a Firebase/GCP service-account key (Admin SDK) would
+    bypass Firestore Security Rules entirely and must never ship in the
+    built app — unlike firebase_config.json's public web API key, which is
+    safe to ship (see firebase_config.example.json). Nothing in this app's
+    design creates or needs a service-account key; this just makes that an
+    enforced build-time check instead of only a convention.
+    """
+    suspects = []
+    for path in ROOT.glob("*.json"):
+        if "service" in path.stem.lower() and "account" in path.stem.lower():
+            suspects.append(path)
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            continue
+        if isinstance(data, dict) and "private_key" in data:
+            suspects.append(path)
+    if suspects:
+        names = ", ".join(p.name for p in suspects)
+        print(f"\n✗ Refusing to build: found what looks like a service-account "
+              f"key ({names}) in {ROOT}. This must never be bundled into the "
+              f"app — delete or move it out of this folder and rebuild.")
+        sys.exit(1)
 
 
 def build_installer() -> Path:

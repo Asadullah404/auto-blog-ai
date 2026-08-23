@@ -2633,38 +2633,42 @@
 Auto Content Pipeline — 24/7 Batch Mode
 Features:
   - NO section limit — processes every section A to Z
-  - CSV batch mode: reads URLs from a .csv file, marks each "done" when complete
-  - CSV can also be a Google Drive share link — multiple PCs can run against
-    the SAME shared list; each URL is claimed ("pending") the moment a
-    machine starts it so another PC won't redo it, and a claim that goes
-    stale (machine crashed/closed) is safe to reclaim automatically
+  - Link list + status live in Firestore (per signed-in Google account), not
+    a local CSV file — multiple PCs signed into the same account can run
+    against the SAME list; each URL is "claimed" the moment a machine starts
+    it so another PC won't redo it, and a claim that goes stale (machine
+    crashed/closed) is safe to reclaim automatically. No whole-file
+    download/re-upload — every state change is one small Firestore write.
   - Quota-safe: on Imagen quota hit, waits 6 hours then auto-resumes same URL
-  - Runs forever until every URL in the CSV is marked done
+  - Runs forever until every URL is marked done
   - FULL MID-RUN RESUME — if stopped at ANY point (Ctrl+C, crash, power loss):
       · Extract   → cached in SQLite after first run, always skipped on restart
       · Transform → each rewrite batch is checkpointed; restarts from last incomplete batch
       · Images    → every individual image is DB-tracked; already-done images are skipped
       · Render    → each rendered section file is checked on disk; already done = skip
       · Compile   → rebuilds HTML (fast, no API calls)
-      · CSV       → "pending" the moment a URL starts, "done" only after the
+      · Firestore → "claimed" the moment a URL starts, "done" only after the
                      full pipeline succeeds — never left ambiguous
   - Sequential image generation: one at a time — never falls back to a blank
     placeholder; a real image that can't be produced pauses the whole run
     (quota_wait) and is retried, instead of continuing with fake art
   - 100% dynamic & fault-tolerant JSON parsing + auto-retry
 Usage:
-  python automation.py                        # prompts for CSV path
-  python automation.py --csv links.csv        # use a local CSV
-  python automation.py --csv "https://drive.google.com/file/d/XXXX/view"  # shared Drive CSV
-  python automation.py --csv links.csv --fresh  # wipe caches and restart
-CSV format (one URL per row, optional category + status columns):
+  python automation.py                          # signs in (via the GUI) then
+                                                  # processes pending Firestore links
+  python automation.py --import-csv links.csv   # one-shot: upload a CSV into
+                                                  # Firestore for the signed-in
+                                                  # account, then exit
+  python automation.py --fresh                   # wipe caches and restart
+CSV format for --import-csv (one URL per row, optional category + status columns):
   https://example.com/article1
-  https://example.com/article2,Technology,done      ← already done, will be skipped
-  https://example.com/article3,Technology,pending:1734567890:desktop-01  ← claimed by a PC, will be skipped until stale
-Google Drive setup (only needed if you pass a Drive link as --csv):
-  1. Google Cloud Console → create an OAuth client, type "Desktop app".
-  2. Download its JSON, save it as credentials.json next to automation.py.
-  3. First run opens a browser to sign in once; after that it's automatic.
+  https://example.com/article2,Technology,done      ← explicit done, won't be reprocessed
+  https://example.com/article3,Technology
+Sign-in setup:
+  1. Firebase project's web config saved as firebase_config.json (see
+     firebase_config.example.json).
+  2. Sign in (or create an account) once from the GUI's email/password
+     screen — after that this process reuses the cached session.
 """
 
 # ── PHASE 0: AUTO INSTALL ────────────────────────────────────
@@ -2760,7 +2764,6 @@ if platform.system() != "Windows":
 
 from pathlib import Path
 from datetime import datetime
-from io import BytesIO
 
 import requests
 from rich.console import Console
@@ -2769,11 +2772,15 @@ from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 from rich.prompt import Prompt
 from rich.rule import Rule
+from rich.markup import escape
 from rich import box
 from jinja2 import Template
 from PIL import Image, ImageDraw, ImageFont, ImageStat
 import cv2, numpy as np
 from bs4 import BeautifulSoup
+
+import firebase_auth
+import firestore_client as fs
 
 console = Console()
 
@@ -2790,6 +2797,8 @@ CONFIG = {
     "use_gpu":            GPU_OK,
     "agy_timeout":        180,
     "agy_img_timeout":    120,
+    "agy_idle_timeout":   150,         # kill an agy call only after this long with zero output
+    "agy_empty_retries":  2,           # extra attempts when agy returns nothing at all
     "skills_dir":         "Skills",
     "seo_skill_file":     "seo_skill.md",
     "chars_per_section":  2000,
@@ -2815,10 +2824,10 @@ CONFIG = {
     "feature_text_overlay":  False,    # paste the post title onto the feature image
     # ── Pinterest pin image ─────────────────────────────────
     "pinterest_pin":         False,    # also render + upload a tall Pinterest pin image
-    # ── Google Drive CSV sync (multi-PC shared link-list) ───
-    "drive_credentials_file": "credentials.json",  # OAuth "Desktop app" client, from Google Cloud Console
-    "drive_token_file":       "token.json",        # cached login — created after first browser sign-in
-    "csv_pending_stale_hours": 3,       # a "pending" claim older than this is treated as an abandoned/crashed run and reclaimed
+    # ── Firestore link state (multi-PC shared link-list, per signed-in account) ──
+    # firebase_config.json / firebase_session.json filenames are owned by
+    # firebase_auth.py, not repeated here.
+    "csv_pending_stale_hours": 3,       # a "claimed" claim older than this is treated as an abandoned/crashed run and reclaimed
 }
 
 QUOTA_WAIT_SECONDS = CONFIG["quota_wait_hours"] * 3600
@@ -3153,147 +3162,47 @@ def csv_save(csv_path: Path, rows: list[dict]):
                 writer.writerow([row["url"]])
 
 
-def csv_mark_done(csv_path: Path, url: str):
-    """Mark a specific URL as done in the CSV file (category is preserved)."""
-    rows = csv_load(csv_path)
-    for row in rows:
-        if row["url"] == url:
-            row["status"] = "done"
-    csv_save(csv_path, rows)
-    ok(f"[dim]CSV updated → [cyan]{url}[/] marked [green]done[/]")
-
-
-def csv_mark_failed(csv_path: Path, url: str):
-    """Mark a specific URL as permanently failed (excluded from future pending lists)."""
-    rows = csv_load(csv_path)
-    for row in rows:
-        if row["url"] == url:
-            row["status"] = "failed"
-    csv_save(csv_path, rows)
-
-
-def csv_claim_pending(csv_path: Path, url: str):
+def firestore_import_csv(uid: str, id_token: str, csv_path: Path) -> dict:
     """
-    Stamp a row as "pending:<epoch>:<hostname>" — claims it for this machine
-    so a different PC reading the same (Drive-synced) CSV skips it instead of
-    re-doing the same article. Written the moment work starts, not at the end.
+    One-shot import: parse a local CSV (same 1/2/3-column heuristic as
+    csv_load) and upsert every row into Firestore. Re-importing the same
+    CSV is safe — see firestore_client.upsert_link for the exact rule
+    (explicit done/failed in the CSV always wins; otherwise an existing
+    doc's status is left untouched, only url/category refresh).
+    Returns {"created": n, "updated": n} counts for the caller to report.
     """
-    rows = csv_load(csv_path)
-    token = f"pending:{int(time.time())}:{platform.node().lower()}"
-    for row in rows:
-        if row["url"] == url:
-            row["status"] = token
-    csv_save(csv_path, rows)
+    counts = {"created": 0, "updated": 0}
+    for row in csv_load(csv_path):
+        status_override = row["status"] if row["status"] in ("done", "failed") else None
+        result = fs.upsert_link(uid, id_token, row["url"], row["category"], status_override)
+        if result in counts:
+            counts[result] += 1
+    return counts
 
 
-def csv_pending(csv_path: Path, stale_hours: float = 3) -> list[dict]:
-    """
-    Rows available to (re)claim: never started, or a "pending" claim old
-    enough (stale_hours) that whatever PC placed it has presumably crashed
-    or was closed — so it's safe to pick back up. "done" and "failed" are
-    always excluded — "failed" is a terminal state (see run_one_url), not a
-    transient one, so it must never be silently retried forever.
-    """
-    now = time.time()
-    stale_secs = stale_hours * 3600
-    result = []
-    for r in csv_load(csv_path):
-        status = r["status"]
-        if status in ("done", "failed"):
-            continue
-        if status.startswith("pending:"):
-            try:
-                claimed_at = float(status.split(":")[1])
-            except (IndexError, ValueError):
-                claimed_at = 0
-            if now - claimed_at < stale_secs:
-                continue  # another machine claimed this recently — leave it alone
-        result.append(r)
-    return result
+def fs_mark_done(uid: str, id_token: str, url: str):
+    fs.set_status(uid, id_token, url, "done")
+    ok(f"[dim]Firestore updated → [cyan]{url}[/] marked [green]done[/]")
 
-# ─────────────────────────────────────────────────────────────
-# GOOGLE DRIVE CSV SYNC — one link-list shared by every PC
-#   - the CSV lives in Drive; each machine downloads the latest copy
-#     before picking a row, and uploads immediately after claiming one
-#   - lets multiple PCs run against the same list without re-doing
-#     articles another machine already started or finished
-# ─────────────────────────────────────────────────────────────
-DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive"]
-_DRIVE_LIBS  = {
-    "google.auth":          "google-auth",
-    "google_auth_oauthlib": "google-auth-oauthlib",
-    "googleapiclient":      "google-api-python-client",
-}
 
-def _is_drive_link(s: str) -> bool:
-    return bool(re.match(r"https?://", s.strip(), re.IGNORECASE)) and \
-           ("drive.google.com" in s or "docs.google.com" in s)
+def fs_mark_failed(uid: str, id_token: str, url: str):
+    fs.set_status(uid, id_token, url, "failed")
 
-def _drive_extract_file_id(link: str) -> str:
-    m = re.search(r"/d/([a-zA-Z0-9_-]{10,})", link)
-    if m: return m.group(1)
-    m = re.search(r"[?&]id=([a-zA-Z0-9_-]{10,})", link)
-    if m: return m.group(1)
-    return link.strip()
 
-def _drive_ensure_libs():
-    for imp, pkg in _DRIVE_LIBS.items():
-        _install(pkg, imp)
+def fs_claim(uid: str, id_token: str, url: str):
+    """Claims a row for this machine — stamps status "claimed" with this
+    hostname + timestamp, so another machine sharing the same account skips
+    it instead of re-doing the same article, until the claim goes stale."""
+    fs.set_status(uid, id_token, url, "claimed",
+                 claimed_by=platform.node().lower(), claimed_at=fs.now_iso())
 
-def _drive_service():
-    """
-    Authenticated Drive API client via personal Google OAuth.
-    First run on a machine opens a browser to sign in; after that the
-    token is cached in drive_token_file and reused silently.
-    """
-    _drive_ensure_libs()
-    from google.auth.transport.requests import Request
-    from google.oauth2.credentials import Credentials
-    from google_auth_oauthlib.flow import InstalledAppFlow
-    from googleapiclient.discovery import build
 
-    token_path = Path(CONFIG["drive_token_file"])
-    creds_path = Path(CONFIG["drive_credentials_file"])
-    creds = None
-
-    if token_path.exists():
-        try:
-            creds = Credentials.from_authorized_user_file(str(token_path), DRIVE_SCOPES)
-        except Exception:
-            creds = None
-
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            if not creds_path.exists():
-                err(f"Google Drive isn't set up yet — {creds_path} not found.\n"
-                    f"  In Google Cloud Console: create an OAuth client (type "
-                    f"'Desktop app'), download its JSON, save it as "
-                    f"'{creds_path}' next to automation.py, then run again.")
-                sys.exit(1)
-            flow  = InstalledAppFlow.from_client_secrets_file(str(creds_path), DRIVE_SCOPES)
-            creds = flow.run_local_server(port=0)
-        token_path.write_text(creds.to_json(), encoding="utf-8")
-
-    return build("drive", "v3", credentials=creds)
-
-def drive_download_csv(file_id: str, dest: Path):
-    from googleapiclient.http import MediaIoBaseDownload
-    svc = _drive_service()
-    request = svc.files().get_media(fileId=file_id)
-    buf = BytesIO()
-    downloader = MediaIoBaseDownload(buf, request)
-    done = False
-    while not done:
-        _, done = downloader.next_chunk()
-    dest.write_bytes(buf.getvalue())
-
-def drive_upload_csv(file_id: str, src: Path):
-    from googleapiclient.http import MediaFileUpload
-    svc = _drive_service()
-    media = MediaFileUpload(str(src), mimetype="text/csv", resumable=False)
-    svc.files().update(fileId=file_id, media_body=media).execute()
+def fs_pending(uid: str, id_token: str, stale_hours: float = 3) -> list[dict]:
+    """Rows available to (re)claim: never started, or a "claimed" claim old
+    enough (stale_hours) that whatever machine placed it has presumably
+    crashed — see firestore_client.query_pending. "done"/"failed" are
+    terminal and always excluded."""
+    return fs.query_pending(uid, id_token, stale_hours)
 
 # ─────────────────────────────────────────────────────────────
 # QUOTA WAIT — 6-hour countdown, then continues
@@ -3488,15 +3397,35 @@ def ensure_seo_skill(skills_dir: str) -> str:
     return SEO_SKILL_CONTENT
 
 # ── AGY CORE ─────────────────────────────────────────────────
-def _check_agy():
+_AGY_CANARY_OK = None
+
+def _check_agy(live: bool = False):
+    """
+    live=True adds a one-time, cheap round-trip call to agy itself (cached
+    for the rest of the process) before the phase's real work starts. Without
+    this, a broken/unauthenticated agy silently burns through every batch (or
+    every image) producing nothing, each one only discovered several minutes
+    in — this fails fast with one clear message instead.
+    """
     if not shutil.which("agy"):
         err("agy not found. Install: curl -fsSL https://antigravity.google/cli/install.sh | bash")
         sys.exit(1)
+    global _AGY_CANARY_OK
+    if live and _AGY_CANARY_OK is None:
+        reply = _run_agy("Reply with exactly: PING", 40)
+        _AGY_CANARY_OK = bool(reply.strip())
+        if not _AGY_CANARY_OK:
+            err("agy ran but produced no output, even on a trivial test prompt and "
+                "after retries — it isn't currently usable from this pipeline. Try "
+                "`agy -p \"hi\"` by hand to check you're signed in and have quota "
+                "left, then re-run. (Aborting now instead of burning through every "
+                "remaining section/image against a broken agy.)")
+            sys.exit(1)
 
 def _strip_ansi(s):
     return re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])').sub("", s)
 
-def _run_agy(prompt: str, timeout: int) -> str:
+def _run_agy_once(prompt: str, timeout: int) -> str:
     if BRIDGE_OK:
         from agy_headless_bridge import run as agy_run
         # agy_headless_bridge does NOT add --dangerously-skip-permissions on
@@ -3505,7 +3434,13 @@ def _run_agy(prompt: str, timeout: int) -> str:
         # every tool call needing approval (e.g. writing the generated image
         # to disk) gets soft-denied in headless mode, which used to get
         # misread as quota exhaustion. Must be passed explicitly here.
+        # idle_timeout is passed explicitly (not left to the bridge's 120s
+        # default) — on Windows, ConPTY can batch and withhold ALL of agy's
+        # output until the process exits, so a call that is silently working
+        # for 2+ minutes on a large batch looks identical to a stalled one;
+        # without this, such calls get killed before they ever print.
         result = agy_run(prompt, timeout=timeout,
+                          idle_timeout=min(CONFIG["agy_idle_timeout"], timeout),
                           extra_args=["--dangerously-skip-permissions"])
         if hasattr(result, "__iter__") and not isinstance(result, str):
             return "".join(c if isinstance(c, str) else str(c) for c in result)
@@ -3537,6 +3472,28 @@ def _run_agy(prompt: str, timeout: int) -> str:
     r = subprocess.run(["agy", "--dangerously-skip-permissions", "-p", prompt],
                        capture_output=True, text=True, timeout=timeout)
     return r.stdout or r.stderr
+
+def _run_agy(prompt: str, timeout: int) -> str:
+    """
+    Wraps _run_agy_once with a couple of retries when agy comes back with
+    literally nothing. On Windows this bridge goes through ConPTY, which has
+    a known failure mode where a fast-completing child's output never gets
+    flushed to the pty before it's torn down — the call reports success but
+    the captured text is empty. That's indistinguishable, from here, from a
+    real "agy produced nothing" outcome, so retry a couple of times (agy is
+    a fresh process each time — a repeat of the empty output isn't just a
+    delayed one) before handing the empty string to the caller.
+    """
+    attempts = CONFIG.get("agy_empty_retries", 0) + 1
+    last = ""
+    for attempt in range(1, attempts + 1):
+        last = _run_agy_once(prompt, timeout)
+        if last.strip():
+            return last
+        if attempt < attempts:
+            warn(f"  agy returned no output (attempt {attempt}/{attempts}) — retrying ...")
+            time.sleep(3)
+    return last
 
 # ─────────────────────────────────────────────────────────────
 # PHASE 1: EXTRACT
@@ -3724,6 +3681,9 @@ def _parse_json(raw, expected_sections=0):
     if secs:
         warn(f"Extracted {len(secs)} section(s) via regex.")
         return {"sections": secs}
+    if not raw.strip():
+        raise ValueError("agy returned no output at all (not a JSON error) — "
+                          "see the retry/canary warnings above for why.")
     raise ValueError(f"Could not parse JSON.\nRaw (first 1000 chars):\n{raw[:1000]}")
 
 CONCLUSION_PROMPT = """\
@@ -3755,7 +3715,7 @@ def _rewrite_conclusion(title, seo_skill, extra=""):
             return {"heading": s.get("heading", f"Final Thoughts on {title}"),
                     "paragraphs": s.get("paragraphs",[])}
     except Exception as e:
-        warn(f"Conclusion rewrite failed ({e}) — using fallback.")
+        warn(f"Conclusion rewrite failed ({escape(str(e))}) — using fallback.")
     return {
         "heading": f"Final Thoughts on {title}",
         "paragraphs": [
@@ -3862,7 +3822,7 @@ def phase_transform(extracted, url, db, seo_skill, category_override: str = ""):
             db_log(db, url, "transform_v3", "done", json.dumps(result))  # re-persist override
         return result
 
-    _check_agy()
+    _check_agy(live=True)
     title    = extracted["title"]
     sections = extracted["sections"]   # ALL sections — no cap
 
@@ -3890,7 +3850,7 @@ def phase_transform(extracted, url, db, seo_skill, category_override: str = ""):
                 CONFIG["agy_timeout"])
             base = _parse_json(raw, len(batches[0]))
         except Exception as e:
-            warn(f"First batch notice ({e}) — recovering ...")
+            warn(f"First batch notice ({escape(str(e))}) — recovering ...")
             base = {"title":title,"meta_description":f"Complete guide on {title}",
                     "keywords":title,"category":"Guide","intro":f"Welcome to our guide on {title}.",
                     "feature_image_prompt":title,"sections":[],"conclusion":None}
@@ -3924,7 +3884,7 @@ def phase_transform(extracted, url, db, seo_skill, category_override: str = ""):
             fetched = _parse_json(raw, len(batch)).get("sections", [])
             if not fetched: raise ValueError("No sections returned")
         except Exception as e:
-            warn(f"Batch {bi+1} notice ({e}) — rewriting individually ...")
+            warn(f"Batch {bi+1} notice ({escape(str(e))}) — rewriting individually ...")
             for s in batch:
                 fetched.append(_rewrite_single_section(s, title, seo_skill))
 
@@ -4159,7 +4119,7 @@ def _generate_one_image(scene: str, slug: str, dest: Path, label: str,
 def phase_images(structured: dict, url: str, db, out_dir: Path) -> dict:
     ph("3", "AI IMAGES",
        f"Sequential — 1 feature + all sections (unlimited) | quota=wait {CONFIG['quota_wait_hours']}h+resume")
-    _check_agy()
+    _check_agy(live=True)
 
     idir = out_dir / "images"; idir.mkdir(exist_ok=True)
     sections    = structured.get("sections", [])
@@ -4604,12 +4564,11 @@ def run_one_url(url: str, seo_skill: str, fresh: bool = False, category: str = "
 # ─────────────────────────────────────────────────────────────
 # BATCH SUMMARY
 # ─────────────────────────────────────────────────────────────
-def batch_summary(csv_path: Path, total: int, done: int, failed: int, elapsed: float):
+def batch_summary(total: int, done: int, failed: int, elapsed: float):
     console.print()
     console.print(Rule("[bold green]Batch Complete[/]", style="green"))
     tbl=Table(box=box.ROUNDED,border_style="green",show_header=False,padding=(0,2))
     tbl.add_column(style="dim",width=18); tbl.add_column(style="white")
-    tbl.add_row("CSV", str(csv_path))
     tbl.add_row("Total URLs", str(total))
     tbl.add_row("Completed",  f"[green]{done}[/]")
     tbl.add_row("Failed",     f"[red]{failed}[/]" if failed else "0")
@@ -4621,9 +4580,9 @@ def batch_summary(csv_path: Path, total: int, done: int, failed: int, elapsed: f
 # ─────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="Auto Content Pipeline — 24/7 Batch")
-    parser.add_argument("--csv",   default=None,
-                        help="Path to a local CSV file with URLs, or a Google Drive "
-                             "share link to a CSV shared across multiple PCs")
+    parser.add_argument("--import-csv", default=None, metavar="PATH",
+                        help="One-shot: import a local CSV of URLs into Firestore "
+                             "for the signed-in account, then exit (does not run the pipeline)")
     parser.add_argument("--fresh", action="store_true", help="Wipe cached images/renders")
     parser.add_argument("--image-format", choices=list(IMAGE_FORMATS), default="webp",
                         help="Output format for generated/rendered images (default: webp)")
@@ -4675,44 +4634,29 @@ def main():
     seo_skill = ensure_seo_skill(CONFIG["skills_dir"])
     console.print()
 
-    # ── Get CSV path (local file, or a Google Drive share link) ─
-    csv_path_str = args.csv
-    if not csv_path_str:
-        csv_path_str = Prompt.ask(
-            "  [bold cyan]Path to your CSV file, or a Google Drive share link[/]",
-            console=console)
-    csv_path_str = csv_path_str.strip()
+    # ── Sign-in check ─────────────────────────────────────────
+    # automation.py never runs its own interactive sign-in (that's the GUI's
+    # sign-in screen) — it just reads whatever session the GUI already
+    # cached to firebase_session.json, refreshing it as needed.
+    id_token, uid = firebase_auth.get_valid_id_token()
+    if not id_token:
+        err("Not signed in — open Content Pipeline and sign in first.")
+        sys.exit(1)
 
-    drive_file_id = None
-    if _is_drive_link(csv_path_str):
-        drive_file_id = _drive_extract_file_id(csv_path_str)
-        csv_path = Path(CONFIG["output_dir"]) / "drive_synced_links.csv"
-        csv_path.parent.mkdir(parents=True, exist_ok=True)
-        inf("Downloading CSV from Google Drive ...")
-        try:
-            drive_download_csv(drive_file_id, csv_path)
-        except Exception as e:
-            err(f"Could not download CSV from Google Drive: {e}")
-            sys.exit(1)
-        ok(f"Synced from Drive → [cyan]{csv_path}[/] "
-           f"[dim](this machine: {platform.node()})[/]")
-    else:
-        csv_path = Path(csv_path_str)
+    if args.import_csv:
+        csv_path = Path(args.import_csv)
         if not csv_path.exists():
             err(f"CSV file not found: {csv_path}")
             sys.exit(1)
+        inf(f"Importing [cyan]{csv_path}[/] into Firestore ...")
+        counts = firestore_import_csv(uid, id_token, csv_path)
+        ok(f"Import complete — [green]{counts['created']}[/] new, "
+           f"[cyan]{counts['updated']}[/] updated.")
+        return
 
-    def _drive_push():
-        """Push the local CSV back to Drive so other PCs see this machine's claim/result."""
-        if drive_file_id:
-            try:
-                drive_upload_csv(drive_file_id, csv_path)
-            except Exception as e:
-                warn(f"Could not sync CSV to Google Drive ({e}) — continuing with local copy.")
-
-    all_rows = csv_load(csv_path)
-    total_urls = len(all_rows)
-    ok(f"CSV loaded: [cyan]{total_urls}[/] URLs found in [cyan]{csv_path}[/]")
+    all_links = fs.run_query(uid, id_token)
+    total_urls = len(all_links)
+    ok(f"[cyan]{total_urls}[/] URLs loaded from Firestore for this account")
     console.print()
 
     batch_start = time.time()
@@ -4721,20 +4665,11 @@ def main():
 
     try:
         while True:
-            # Reload CSV each pass — pulls the latest from Drive first (if
-            # configured) so we see claims/completions other PCs have made
-            if drive_file_id:
-                try:
-                    drive_download_csv(drive_file_id, csv_path)
-                except Exception as e:
-                    warn(f"Could not pull latest CSV from Google Drive ({e}) — "
-                         f"using last local copy.")
-
-            pending = csv_pending(csv_path, CONFIG["csv_pending_stale_hours"])
+            pending = fs_pending(uid, id_token, CONFIG["csv_pending_stale_hours"])
 
             if not pending:
                 console.print()
-                ok("[bold green]All URLs in the CSV are marked done! Pipeline complete.[/]")
+                ok("[bold green]All URLs are marked done! Pipeline complete.[/]")
                 break
 
             inf(f"[cyan]{len(pending)}[/] URLs remaining out of [cyan]{total_urls}[/]")
@@ -4742,42 +4677,40 @@ def main():
 
             row      = pending[0]   # process next pending row
             url      = row["url"]
-            category = row["category"]
+            category = row.get("category", "")
             if category:
-                inf(f"CSV category → [cyan]{category}[/]")
+                inf(f"Category → [cyan]{category}[/]")
 
             # Claim it immediately — announces "I'm working this" to any
-            # other PC sharing this CSV via Drive, before any real work starts
-            csv_claim_pending(csv_path, url)
-            _drive_push()
+            # other machine signed into the same account, before any real
+            # work starts (one Firestore write, no whole-file re-upload)
+            fs_claim(uid, id_token, url)
 
             result = run_one_url(url, seo_skill, fresh=args.fresh, category=category)
 
             if result == "done":
-                csv_mark_done(csv_path, url)
+                fs_mark_done(uid, id_token, url)
                 done_count += 1
 
             elif result == "failed":
                 # 3 consecutive crashes — mark failed so we skip and move on
-                csv_mark_failed(csv_path, url)
-                warn(f"Marked as [red]failed[/] in CSV: {url}")
+                fs_mark_failed(uid, id_token, url)
+                warn(f"Marked as [red]failed[/]: {url}")
                 fail_count += 1
 
             # result == "retry" → URL stays pending; next loop iteration picks it up
             # (this path is never actually reached right now because run_one_url
             #  internally retries, but the hook is here for future use)
 
-            _drive_push()
-
             console.print()
             console.print(Rule(style="dim"))
 
     except KeyboardInterrupt:
         console.print("\n\n  [yellow]Interrupted by user.[/]")
-        console.print(f"  Progress is saved in the CSV. Run again to resume.\n")
+        console.print(f"  Progress is saved in Firestore. Run again to resume.\n")
 
     elapsed = time.time() - batch_start
-    batch_summary(csv_path, total_urls, done_count, fail_count, elapsed)
+    batch_summary(total_urls, done_count, fail_count, elapsed)
 
 
 if __name__ == "__main__":
