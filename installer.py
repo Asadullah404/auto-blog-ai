@@ -97,9 +97,12 @@ def main():
 
     dest = _install_dir()
     if dest.exists():
-        if not _confirm(f"{DISPLAY_NAME} is already installed at:\n{dest}\n\nReinstall / update it?"):
+        if not _confirm(f"{DISPLAY_NAME} is already installed at:\n{dest}\n\n"
+                        f"Update / reinstall to the latest version?\n\n"
+                        f"(Your generated articles, pipeline progress, and settings will be preserved.)"):
             sys.exit(0)
-        shutil.rmtree(dest, ignore_errors=True)
+        # Note: Do NOT wipe dest with rmtree — preserve existing pipeline_output/,
+        # pipeline_config.json, firebase_session.json, and databases.
 
     dest.mkdir(parents=True, exist_ok=True)
     for item in src.iterdir():

@@ -2805,7 +2805,8 @@ CONFIG = {
     "chars_per_section":  2000,
     "batch_size":         3,
     # ── Image generation provider / engine ───────────────────
-    "image_engine":       "agy_fallback",  # "agy_fallback" | "pollinations" | "agy_only"
+    "image_engine":       "agy_fallback",  # "agy_fallback" | "pollinations" | "agy_only" | "my_server"
+    "server_url":         "",              # Colab / ngrok custom server URL (with /generate)
     "pollinations_delay": 180,             # seconds between Pollinations API calls (3 min gap)
     # ── Quota wait ──────────────────────────────────────────
     "quota_wait_hours":   6,           # wait this long after quota hit
@@ -3473,8 +3474,16 @@ def _run_agy_once(prompt: str, timeout: int) -> str:
         proc.wait()
         return "".join(chunks)
 
+    extra_kwargs = {}
+    if sys.platform == "win32":
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0
+        extra_kwargs["startupinfo"] = si
+        extra_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
     r = subprocess.run(["agy", "--dangerously-skip-permissions", "-p", prompt],
-                       capture_output=True, text=True, timeout=timeout)
+                       capture_output=True, text=True, timeout=timeout, **extra_kwargs)
     return r.stdout or r.stderr
 
 def _run_agy(prompt: str, timeout: int) -> str:
@@ -4100,6 +4109,77 @@ def _generate_one_image_pollinations(scene: str, dest: Path, width: int, height:
 
     return False
 
+def _generate_one_image_myserver(scene: str, dest: Path, width: int, height: int, label: str) -> bool:
+    """Generates an image via custom GPU server (e.g. Colab / ngrok RealVis / SD endpoint)."""
+    server_url = CONFIG.get("server_url", "").strip()
+    if not server_url:
+        raise ImageGenerationError("Custom server URL is empty or not provided. Please provide --server-url.")
+
+    clean_prompt = re.sub(r'[\r\n\t]+', ' ', scene).strip()
+    if not any(k in clean_prompt.lower() for k in ["photorealistic", "photo", "cinematic", "photography"]):
+        clean_prompt = f"{clean_prompt}, photorealistic, cinematic lighting, sharp focus, professional photography, no text, no watermark"
+
+    payload = {
+        "prompt": clean_prompt,
+        "negative_prompt": "cartoon, drawing, painting, blurry, deformed hands, bad quality, oversaturated, CGI",
+        "width": width,
+        "height": height,
+        "steps": 25,
+        "guidance_scale": 6.0
+    }
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "ngrok-skip-browser-warning": "69420"
+    }
+
+    max_retries = CONFIG.get("img_max_retries", 3)
+    retry_delay = CONFIG.get("img_retry_delay", 15)
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            inf(f"  [magenta]My Server[/] generating {label} ({width}×{height}) [attempt {attempt}/{max_retries}] ...")
+            r = requests.post(server_url, json=payload, headers=headers, timeout=180)
+
+            if r.status_code != 200:
+                warn(f"  My Server HTTP {r.status_code} for {label}: {r.text[:120]}")
+                if attempt < max_retries:
+                    time.sleep(retry_delay)
+                    continue
+                raise ImageGenerationError(f"My Server returned HTTP {r.status_code} for {label}")
+
+            if len(r.content) < CONFIG["img_min_file_bytes"]:
+                warn(f"  My Server image too small ({len(r.content)}B) — rejecting")
+                if attempt < max_retries:
+                    time.sleep(retry_delay)
+                    continue
+                raise ImageGenerationError(f"My Server returned undersized image for {label}")
+
+            img = Image.open(BytesIO(r.content)).convert("RGB")
+            if _is_blank_image(img):
+                warn(f"  My Server image is flat/blank — rejecting")
+                if attempt < max_retries:
+                    time.sleep(retry_delay)
+                    continue
+                raise ImageGenerationError(f"My Server returned blank/flat image for {label}")
+
+            _save_image(img, dest)
+            return True
+
+        except requests.RequestException as e:
+            warn(f"  My Server connection error for {label} (attempt {attempt}/{max_retries}): {e}")
+            if attempt < max_retries:
+                time.sleep(retry_delay)
+                continue
+            raise ImageGenerationError(f"My Server connection failed for {label}: {e}")
+        except Exception as e:
+            warn(f"  My Server error for {label} (attempt {attempt}/{max_retries}): {e}")
+            if attempt < max_retries:
+                time.sleep(retry_delay)
+                continue
+            raise ImageGenerationError(f"My Server image processing failed for {label}: {e}")
+
+    return False
+
 def _generate_one_image_agy(scene: str, slug: str, dest: Path, label: str) -> bool:
     """Generates a single image using agy (Antigravity CLI / Imagen)."""
     expected_path = dest.parent / f"{slug}_src.png"
@@ -4177,7 +4257,8 @@ def _generate_one_image_agy(scene: str, slug: str, dest: Path, label: str) -> bo
 def _generate_one_image(scene: str, slug: str, dest: Path, label: str,
                          db, url: str, width: int = None, height: int = None) -> bool:
     """
-    Generates a single real image using the selected image engine (agy_fallback, pollinations, agy_only).
+    Generates a single real image using the selected image engine (agy_fallback, pollinations, agy_only, my_server).
+    - If engine == 'my_server': uses custom Colab / ngrok GPU server with exact width/height.
     - If engine == 'pollinations' or fallback is active: uses Pollinations AI with exact width/height.
     - If engine == 'agy_fallback': tries agy first, and switches to Pollinations AI on quota/failure.
     - If engine == 'agy_only': tries agy and raises QuotaExceededError on quota hit.
@@ -4198,14 +4279,21 @@ def _generate_one_image(scene: str, slug: str, dest: Path, label: str,
 
     engine = CONFIG.get("image_engine", "agy_fallback")
 
-    # 1. Direct Pollinations or Active Fallback mode
+    # 1. Custom GPU Server mode
+    if engine == "my_server":
+        if _generate_one_image_myserver(scene, dest, w, h, label):
+            db_img_save(db, url, img_key, dest)
+            return True
+        return False
+
+    # 2. Direct Pollinations or Active Fallback mode
     if engine == "pollinations" or (engine == "agy_fallback" and _FALLBACK_ACTIVE):
         if _generate_one_image_pollinations(scene, dest, w, h, label):
             db_img_save(db, url, img_key, dest)
             return True
         return False
 
-    # 2. Try agy first
+    # 3. Try agy first
     try:
         if _generate_one_image_agy(scene, slug, dest, label):
             db_img_save(db, url, img_key, dest)
@@ -4235,13 +4323,14 @@ def _generate_one_image(scene: str, slug: str, dest: Path, label: str,
 
 def phase_images(structured: dict, url: str, db, out_dir: Path) -> dict:
     engine = CONFIG.get("image_engine", "agy_fallback")
-    engine_desc = ("Antigravity (with Pollinations fallback)" if engine == "agy_fallback"
+    engine_desc = ("My Server (Colab/ngrok GPU)" if engine == "my_server"
+                   else "Antigravity (with Pollinations fallback)" if engine == "agy_fallback"
                    else "Pollinations AI Only" if engine == "pollinations"
                    else f"Antigravity Only (quota=wait {CONFIG['quota_wait_hours']}h+resume)")
     ph("3", "AI IMAGES",
        f"Sequential — 1 feature + all sections | Engine: {engine_desc} | Format: {CONFIG['image_format'].upper()}")
 
-    if engine != "pollinations":
+    if engine not in ("pollinations", "my_server"):
         _check_agy(live=True)
 
     idir = out_dir / "images"; idir.mkdir(exist_ok=True)
@@ -4268,7 +4357,7 @@ def phase_images(structured: dict, url: str, db, out_dir: Path) -> dict:
         if feat_dest.exists() and feat_dest.stat().st_size > CONFIG["img_min_file_bytes"]:
             ok(f"Feature image ✓ ({feat_dest.stat().st_size // 1024} KB)")
             generated_count += 1
-            if engine != "pollinations":
+            if engine not in ("pollinations", "my_server"):
                 inf(f"  Waiting {inter_delay}s ...")
                 time.sleep(inter_delay)
 
@@ -4306,7 +4395,7 @@ def phase_images(structured: dict, url: str, db, out_dir: Path) -> dict:
 
             prog.advance(t)
 
-            if i < len(sections) - 1 and engine != "pollinations":
+            if i < len(sections) - 1 and engine not in ("pollinations", "my_server"):
                 inf(f"  Waiting {inter_delay}s ...")
                 time.sleep(inter_delay)
 
@@ -4710,9 +4799,12 @@ def main():
                         help="One-shot: import a local CSV of URLs into Firestore "
                              "for the signed-in account, then exit (does not run the pipeline)")
     parser.add_argument("--fresh", action="store_true", help="Wipe cached images/renders")
-    parser.add_argument("--image-engine", choices=["agy_fallback", "pollinations", "agy_only"], default=None,
+    parser.add_argument("--image-engine", choices=["agy_fallback", "pollinations", "agy_only", "my_server"], default=None,
                         help="Image generation provider: agy_fallback (Antigravity with Pollinations fallback), "
-                             "pollinations (Pollinations AI only), agy_only (Antigravity only, 6h quota wait)")
+                             "pollinations (Pollinations AI only), agy_only (Antigravity only, 6h quota wait), "
+                             "my_server (Custom Colab / ngrok GPU server)")
+    parser.add_argument("--server-url", default=None,
+                        help="Custom image generation server URL (e.g. https://.../generate)")
     parser.add_argument("--pollinations-delay", type=int, default=None,
                         help="Delay in seconds between Pollinations AI image calls (default: 180)")
     parser.add_argument("--image-format", choices=list(IMAGE_FORMATS), default="webp",
@@ -4750,6 +4842,8 @@ def main():
 
     if args.image_engine:
         CONFIG["image_engine"] = args.image_engine
+    if args.server_url:
+        CONFIG["server_url"] = args.server_url
     if args.pollinations_delay is not None:
         CONFIG["pollinations_delay"] = args.pollinations_delay
 
@@ -4769,7 +4863,8 @@ def main():
     _check_agy(); ok("agy found on PATH.")
     if CONFIG["use_gpu"]: ok("GPU (CuPy) enabled.")
     else: inf("CPU mode.")
-    engine_desc = ("Antigravity (with Pollinations fallback)" if CONFIG["image_engine"] == "agy_fallback"
+    engine_desc = ("My Server (Colab/ngrok GPU)" if CONFIG["image_engine"] == "my_server"
+                   else "Antigravity (with Pollinations fallback)" if CONFIG["image_engine"] == "agy_fallback"
                    else "Pollinations AI Only" if CONFIG["image_engine"] == "pollinations"
                    else "Antigravity Only")
     ok(f"Image Engine: [bold cyan]{engine_desc}[/] "

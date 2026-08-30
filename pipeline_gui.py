@@ -97,11 +97,17 @@ DEFAULTS = {
     "heading_text_overlay": True,      # paste each section heading onto its image
     "feature_text_overlay": False,     # paste the post title onto the feature image
     "pinterest_pin":        False,     # also render + upload a Pinterest pin image
+    "display_links": [
+        {"title": "", "url": ""},
+        {"title": "", "url": ""},
+        {"title": "", "url": ""},
+    ],
 }
 
 ENGINE_LABELS = {
     "Antigravity (with Pollinations Fallback)": "agy_fallback",
     "Pollinations AI Only":                     "pollinations",
+    "My Server (Colab / ngrok GPU)":            "my_server",
     "Antigravity Only (6h Quota Wait)":         "agy_only",
 }
 ENGINE_LABELS_REV = {v: k for k, v in ENGINE_LABELS.items()}
@@ -364,6 +370,80 @@ class SetupWizard(ctk.CTkToplevel):
 
 
 # ─────────────────────────────────────────────────────────────
+# Custom Image Server URL modal — prompted on Start/Resume when "My Server" engine is selected
+# (ephemeral in-memory session only; never stored to pipeline_config.json or cloud sync)
+# ─────────────────────────────────────────────────────────────
+class ServerUrlModal(ctk.CTkToplevel):
+    def __init__(self, parent, on_done, initial_url=""):
+        super().__init__(parent)
+        self.on_done = on_done
+        self.title("Connect Custom Image Server")
+        self.geometry("500x290")
+        self.resizable(False, False)
+        self.configure(fg_color=COLORS["bg"])
+
+        ctk.CTkLabel(self, text="⚡  Connect Colab / ngrok GPU Server",
+                    font=ctk.CTkFont(size=17, weight="bold"),
+                    text_color=COLORS["text"]).pack(anchor="w", padx=24, pady=(22, 4))
+        ctk.CTkLabel(self, text="Enter your active ngrok or Colab public URL. The /generate "
+                                "endpoint will be automatically formatted and appended.",
+                    font=ctk.CTkFont(size=12), text_color=COLORS["text_mute"],
+                    wraplength=450, justify="left").pack(anchor="w", padx=24, pady=(0, 14))
+
+        ctk.CTkLabel(self, text="Server URL (e.g. https://xxxx.ngrok-free.dev)",
+                     anchor="w", text_color=COLORS["text_dim"]).pack(fill="x", padx=24)
+        self.e_url = ctk.CTkEntry(self, height=38, placeholder_text="https://xxxx-xxxx.ngrok-free.dev",
+                                  fg_color=COLORS["bg_alt"], border_color=COLORS["border"])
+        if initial_url:
+            self.e_url.insert(0, initial_url)
+        self.e_url.pack(fill="x", padx=24, pady=(4, 6))
+
+        self.hint = ctk.CTkLabel(self, text="", text_color=COLORS["amber"],
+                                 font=ctk.CTkFont(size=11), wraplength=450, justify="left")
+        self.hint.pack(fill="x", padx=24, pady=(2, 0))
+
+        btns = ctk.CTkFrame(self, fg_color="transparent")
+        btns.pack(fill="x", padx=24, pady=(10, 18), side="bottom")
+        ctk.CTkButton(btns, text="Cancel", fg_color="transparent",
+                      hover_color=COLORS["card_alt"], text_color=COLORS["text_mute"],
+                      command=self._cancel).pack(side="left")
+        ctk.CTkButton(btns, text="Start Pipeline", height=38, fg_color=COLORS["accent"],
+                      hover_color=COLORS["accent_hover"], font=ctk.CTkFont(size=13, weight="bold"),
+                      command=self._submit).pack(side="right")
+
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+        self.after(80, self._make_modal)
+
+    def _make_modal(self):
+        self.transient(self.master)
+        self.grab_set()
+        self.e_url.focus()
+
+    def _cancel(self):
+        self.grab_release()
+        self.destroy()
+        self.on_done(None)
+
+    def _submit(self):
+        url = self.e_url.get().strip()
+        if not url:
+            self.hint.configure(text="Please enter a valid server URL.")
+            return
+
+        # Clean and normalize URL
+        url = url.rstrip("/")
+        if not (url.startswith("http://") or url.startswith("https://")):
+            url = "https://" + url
+
+        if not url.endswith("/generate"):
+            url = url + "/generate"
+
+        self.grab_release()
+        self.destroy()
+        self.on_done(url)
+
+
+# ─────────────────────────────────────────────────────────────
 class ControlPanel(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -377,6 +457,7 @@ class ControlPanel(ctk.CTk):
 
         self.cfg = load_cfg()
         self.proc = None
+        self._last_server_url = ""
         self.log_q = queue.Queue()
         self._running = False
         self.res_pickers = {}   # cfg_key -> {"menu","e_w","e_h"}, filled by _resolution_picker
@@ -839,9 +920,10 @@ class ControlPanel(ctk.CTk):
 
     def _on_engine_change(self, choice):
         """Enable/disable Pollinations delay field based on selected image engine."""
-        is_agy_only = ENGINE_LABELS.get(choice) == "agy_only"
+        engine = ENGINE_LABELS.get(choice)
+        is_pol = engine in ("pollinations", "agy_fallback")
         if hasattr(self, "e_pol_delay"):
-            self.e_pol_delay.configure(state="disabled" if is_agy_only else "normal")
+            self.e_pol_delay.configure(state="normal" if is_pol else "disabled")
 
     # ── DASHBOARD ─────────────────────────────────────────────
     def _build_dashboard(self, page):
@@ -918,6 +1000,66 @@ class ControlPanel(ctk.CTk):
                                        fg_color=COLORS["bg_alt"], text_color=COLORS["text_dim"])
         self.mini_log.pack(fill="both", expand=True, padx=16, pady=(0, 16))
         self._tag_log_widget(self.mini_log)
+
+        # Quick Links / Display Links (Up to 3 shortcuts)
+        self.links_card = ctk.CTkFrame(wrap, corner_radius=12, fg_color=COLORS["card"],
+                                       border_width=1, border_color=COLORS["border"])
+        self.links_card.grid(row=4, column=0, columnspan=5, sticky="ew", padx=6, pady=(6, 14))
+        lhdr = ctk.CTkFrame(self.links_card, fg_color="transparent")
+        lhdr.pack(fill="x", padx=16, pady=(14, 6))
+        ctk.CTkLabel(lhdr, text="🔗  Quick Links", font=ctk.CTkFont(size=13, weight="bold"),
+                     text_color=COLORS["text"]).pack(side="left")
+        ctk.CTkButton(lhdr, text="⚙ Manage Links in Settings", width=160, height=22, fg_color="transparent",
+                      hover_color=COLORS["card_alt"], text_color=COLORS["text_mute"],
+                      command=lambda: self._show_page("Settings")).pack(side="right")
+
+        self.dashboard_links_frame = ctk.CTkFrame(self.links_card, fg_color="transparent")
+        self.dashboard_links_frame.pack(fill="x", padx=16, pady=(0, 14))
+        self._render_dashboard_links()
+
+    def _render_dashboard_links(self):
+        if not hasattr(self, "dashboard_links_frame"):
+            return
+        for child in self.dashboard_links_frame.winfo_children():
+            child.destroy()
+
+        links = [l for l in self.cfg.get("display_links", []) if isinstance(l, dict) and l.get("url")]
+
+        if not links:
+            placeholder = ctk.CTkLabel(
+                self.dashboard_links_frame,
+                text="No quick links configured. Add up to 3 shortcut links in Settings → Display Links.",
+                font=ctk.CTkFont(size=12), text_color=COLORS["text_mute"]
+            )
+            placeholder.pack(anchor="w", pady=4)
+            return
+
+        cols_frame = ctk.CTkFrame(self.dashboard_links_frame, fg_color="transparent")
+        cols_frame.pack(fill="x", expand=True)
+
+        for i, item in enumerate(links[:3]):
+            title = item.get("title", "").strip() or f"Link {i+1}"
+            raw_url = item.get("url", "").strip()
+            if not (raw_url.startswith("http://") or raw_url.startswith("https://")):
+                url = "https://" + raw_url
+            else:
+                url = raw_url
+
+            btn_frame = ctk.CTkFrame(cols_frame, corner_radius=8, fg_color=COLORS["bg_alt"],
+                                     border_width=1, border_color=COLORS["border"])
+            btn_frame.pack(side="left", fill="x", expand=True, padx=(0 if i == 0 else 8, 0))
+
+            btn = ctk.CTkButton(
+                btn_frame,
+                text=f"🌐  {title}  ↗",
+                height=38,
+                fg_color="transparent",
+                hover_color=COLORS["accent_soft"],
+                text_color=COLORS["accent"],
+                font=ctk.CTkFont(size=12, weight="bold"),
+                command=lambda u=url: webbrowser.open(u)
+            )
+            btn.pack(fill="both", expand=True, padx=4, pady=4)
 
     def _stat_card(self, parent, key, icon, label):
         card = ctk.CTkFrame(parent, corner_radius=12, fg_color=COLORS["card"],
@@ -1056,9 +1198,23 @@ class ControlPanel(ctk.CTk):
             self.after(0, lambda: self.sync_status_lbl.configure(
                 text="✗ automation not found (script or .exe).", text_color=COLORS["red"]))
             return
+        run_kwargs = {
+            "cwd": run_dir,
+            "capture_output": True,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "timeout": 300,
+        }
+        if sys.platform == "win32":
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = 0
+            run_kwargs["startupinfo"] = si
+            run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
         try:
-            result = subprocess.run(cmd, cwd=run_dir, capture_output=True, text=True,
-                                    encoding="utf-8", errors="replace", timeout=300)
+            result = subprocess.run(cmd, **run_kwargs)
         except Exception as e:
             self.after(0, lambda: self.sync_status_lbl.configure(text=f"✗ {e}", text_color=COLORS["red"]))
             return
@@ -1293,6 +1449,39 @@ class ControlPanel(ctk.CTk):
                                 "pin_resolution", default_wh=("1000", "1500"))
         self._on_pinterest_toggle()
 
+        # Display Links (Dashboard Shortcuts — max 3 links)
+        dl_card = self._card(s, "🔗", "Display Links", "Add up to 3 quick-access website links shown directly on your Dashboard")
+        self.display_link_entries = []
+        saved_links = self.cfg.get("display_links", [])
+        for i in range(3):
+            slot_frame = ctk.CTkFrame(dl_card, fg_color=COLORS["bg_alt"], corner_radius=8,
+                                      border_width=1, border_color=COLORS["border"])
+            slot_frame.pack(fill="x", pady=4, padx=2)
+
+            ctk.CTkLabel(slot_frame, text=f"Display Link #{i+1}", font=ctk.CTkFont(size=12, weight="bold"),
+                         text_color=COLORS["accent"]).pack(anchor="w", padx=12, pady=(8, 2))
+
+            row_inputs = ctk.CTkFrame(slot_frame, fg_color="transparent")
+            row_inputs.pack(fill="x", padx=12, pady=(0, 8))
+
+            e_title = ctk.CTkEntry(row_inputs, width=180, height=34,
+                                   placeholder_text=f"Title (e.g. My Website)",
+                                   fg_color=COLORS["card"], border_color=COLORS["border"])
+            e_title.pack(side="left", padx=(0, 8))
+
+            e_url = ctk.CTkEntry(row_inputs, height=34,
+                                 placeholder_text="URL (https://...)",
+                                 fg_color=COLORS["card"], border_color=COLORS["border"])
+            e_url.pack(side="left", fill="x", expand=True)
+
+            if i < len(saved_links) and isinstance(saved_links[i], dict):
+                if saved_links[i].get("title"):
+                    e_title.insert(0, saved_links[i]["title"])
+                if saved_links[i].get("url"):
+                    e_url.insert(0, saved_links[i]["url"])
+
+            self.display_link_entries.append((e_title, e_url))
+
         # Run
         run = self._card(s, "▶", "Run", "Links to process come from the Sync page (Firestore), not a local file")
         self.fresh_var = tk.BooleanVar(value=bool(self.cfg.get("fresh", False)))
@@ -1464,6 +1653,17 @@ class ControlPanel(ctk.CTk):
             if val.isdigit():
                 pol_delay = int(val)
 
+        dlinks = []
+        if hasattr(self, "display_link_entries"):
+            for e_title, e_url in self.display_link_entries:
+                t = e_title.get().strip()
+                u = e_url.get().strip()
+                if u and not (u.startswith("http://") or u.startswith("https://")):
+                    u = "https://" + u
+                dlinks.append({"title": t, "url": u})
+        else:
+            dlinks = self.cfg.get("display_links", [])
+
         return {
             "base_url":     self.e_url.get().strip().rstrip("/"),
             "username":     self.e_user.get().strip(),
@@ -1483,6 +1683,7 @@ class ControlPanel(ctk.CTk):
             "heading_text_overlay": bool(self.heading_text_var.get()),
             "feature_text_overlay": bool(self.feature_text_var.get()),
             "pinterest_pin":        bool(self.pinterest_var.get()),
+            "display_links":        dlinks,
         }
 
     def _apply_cfg_to_widgets(self, cfg):
@@ -1512,6 +1713,17 @@ class ControlPanel(ctk.CTk):
         self._apply_resolution("feature_resolution", cfg.get("feature_resolution", "hd"))
         self._apply_resolution("pin_resolution", cfg.get("pin_resolution", "1000x1500"),
                                default_wh=("1000", "1500"))
+        if hasattr(self, "display_link_entries"):
+            links = cfg.get("display_links", [])
+            for i, (e_title, e_url) in enumerate(self.display_link_entries):
+                e_title.delete(0, "end")
+                e_url.delete(0, "end")
+                if i < len(links) and isinstance(links[i], dict):
+                    if links[i].get("title"):
+                        e_title.insert(0, links[i]["title"])
+                    if links[i].get("url"):
+                        e_url.insert(0, links[i]["url"])
+        self._render_dashboard_links()
         self._on_pinterest_toggle()
         self._refresh_badges()
 
@@ -1643,10 +1855,26 @@ class ControlPanel(ctk.CTk):
         self._log(f"\n$ {' '.join(cmd)}\n")
         self._set_running(True, tag)
         env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8", PIPELINE_CONFIG=CONFIG_PATH)
+        popen_kwargs = {
+            "stdin": subprocess.PIPE,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.STDOUT,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "bufsize": 1,
+            "env": env,
+            "cwd": run_cwd,
+        }
+        if sys.platform == "win32":
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = 0  # SW_HIDE
+            popen_kwargs["startupinfo"] = si
+            popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
         try:
-            self.proc = subprocess.Popen(
-                cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, encoding="utf-8", errors="replace", bufsize=1, env=env, cwd=run_cwd)
+            self.proc = subprocess.Popen(cmd, **popen_kwargs)
         except FileNotFoundError as e:
             self._log(f"✗ Could not start: {e}\n"); self._set_running(False); return
         threading.Thread(target=self._reader, args=(self.proc, tag), daemon=True).start()
@@ -1662,6 +1890,7 @@ class ControlPanel(ctk.CTk):
     # ── button actions ─────────────────────────────────────
     def on_save(self):
         self._save()
+        self._render_dashboard_links()
         self._log("💾 Settings saved to " + CONFIG_PATH + "\n")
         self._flash(self.btn_save, "✓  Saved", COLORS["green"], "💾  Save Settings", COLORS["accent"])
 
@@ -1676,6 +1905,22 @@ class ControlPanel(ctk.CTk):
             self._log("⏳ Connecting to your account…\n")
             self._await_auth(self.on_start, on_timeout=self._start_signin_timeout)
             return
+
+        engine_val = ENGINE_LABELS.get(self.engine_menu.get(), "agy_fallback") if hasattr(self, "engine_menu") else "agy_fallback"
+        if engine_val == "my_server":
+            ServerUrlModal(self, on_done=self._on_server_url_done, initial_url=getattr(self, "_last_server_url", ""))
+            return
+
+        self._execute_pipeline()
+
+    def _on_server_url_done(self, server_url):
+        if not server_url:
+            self._log("Pipeline start cancelled.\n")
+            return
+        self._last_server_url = server_url
+        self._execute_pipeline(server_url=server_url)
+
+    def _execute_pipeline(self, server_url=None):
         engine_val = ENGINE_LABELS.get(self.engine_menu.get(), "agy_fallback") if hasattr(self, "engine_menu") else "agy_fallback"
         pol_delay_val = self.e_pol_delay.get().strip() if hasattr(self, "e_pol_delay") else "180"
         if not pol_delay_val.isdigit():
@@ -1689,6 +1934,8 @@ class ControlPanel(ctk.CTk):
             "--feature-resolution", self._resolve_resolution("feature_resolution"),
             "--pin-resolution", self._resolve_resolution("pin_resolution"),
         ]
+        if server_url:
+            args.extend(["--server-url", server_url])
         if self.fresh_var.get():
             args.append("--fresh")
         if self.feature_text_var.get():
