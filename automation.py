@@ -2757,7 +2757,8 @@ except Exception: pass
 print("\n✅ Dependencies ready.\n")
 
 # ── IMPORTS ──────────────────────────────────────────────────
-import json, sqlite3, textwrap, hashlib, re, platform, argparse, threading, queue
+import json, sqlite3, textwrap, hashlib, re, platform, argparse, threading, queue, urllib.parse
+from io import BytesIO
 
 if platform.system() != "Windows":
     import pty, select
@@ -2803,6 +2804,9 @@ CONFIG = {
     "seo_skill_file":     "seo_skill.md",
     "chars_per_section":  2000,
     "batch_size":         3,
+    # ── Image generation provider / engine ───────────────────
+    "image_engine":       "agy_fallback",  # "agy_fallback" | "pollinations" | "agy_only"
+    "pollinations_delay": 180,             # seconds between Pollinations API calls (3 min gap)
     # ── Quota wait ──────────────────────────────────────────
     "quota_wait_hours":   6,           # wait this long after quota hit
     # ── Image delays ────────────────────────────────────────
@@ -4012,35 +4016,92 @@ def _copy_image_to_dest(img_path: Path, dest: Path) -> bool:
         warn(f"  Image copy/validate failed: {e}")
         return False
 
-def _generate_one_image(scene: str, slug: str, dest: Path, label: str,
-                         db, url: str) -> bool:
-    """
-    Generates a single real image — never falls back to a blank placeholder.
+_LAST_POLLINATIONS_TIME = 0.0
+_FALLBACK_ACTIVE = False
 
-    agy is told an exact absolute path to save to (expected_path), so finding
-    the result is a direct file-exists check first, not a guess — the old
-    behavior of scanning agy's ~/.gemini "brain" folders and regex-parsing
-    its printed output for a path is kept only as a fallback safety net for
-    the (rare) case agy doesn't honor the requested path.
+def _wait_pollinations_rate_limit():
+    """Ensures at least CONFIG['pollinations_delay'] seconds (default: 180s / 3 min)
+    have passed since the last Pollinations API request to prevent spam/rate-limiting."""
+    global _LAST_POLLINATIONS_TIME
+    delay = CONFIG.get("pollinations_delay", 180)
+    if delay <= 0:
+        return
+    now = time.time()
+    elapsed = now - _LAST_POLLINATIONS_TIME
+    if _LAST_POLLINATIONS_TIME > 0 and elapsed < delay:
+        wait_needed = int(delay - elapsed)
+        inf(f"  [cyan]Pollinations rate limit[/]: waiting {wait_needed}s before next image ...")
+        while wait_needed > 0:
+            console.print(f"  [dim]⏳ Pollinations gap: [cyan]{wait_needed:02d}s remaining[/] ...[/dim]", end="\r")
+            time.sleep(1)
+            wait_needed -= 1
+        console.print(" " * 60, end="\r")
 
-    A failure only becomes a quota wait (QuotaExceededError) when a real
-    quota/rate-limit signal was actually seen in agy's output or exception
-    text. Any other repeated failure — agy erroring for an unrelated reason,
-    or never producing a file even at the exact requested path — raises
-    ImageGenerationError instead, surfacing the *real* cause to the log and
-    letting run_one_url's normal crash-retry handle it, rather than lying
-    about quota and making the pipeline sit out a pointless 6h wait.
-    """
-    img_key = f"img:{slug}"
+def _generate_one_image_pollinations(scene: str, dest: Path, width: int, height: int, label: str) -> bool:
+    """Generates an image via Pollinations AI with exact dimensions and anti-spam delay."""
+    global _LAST_POLLINATIONS_TIME
+    _wait_pollinations_rate_limit()
 
-    saved = db_img_done(db, url, img_key)
-    if saved and Path(saved).exists() and Path(saved).stat().st_size > CONFIG["img_min_file_bytes"]:
-        if Path(saved) != dest:
-            try: shutil.copy(saved, dest)
-            except Exception: pass
-        ok(f"  {label} [dim]resumed from cache[/]")
-        return True
+    clean_prompt = re.sub(r'[\r\n\t]+', ' ', scene).strip()
+    if not any(k in clean_prompt.lower() for k in ["photorealistic", "photo", "cinematic", "photography"]):
+        clean_prompt = f"{clean_prompt}, photorealistic, cinematic lighting, sharp focus, professional photography, no text, no watermark"
 
+    encoded_prompt = urllib.parse.quote(clean_prompt)
+    url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width={width}&height={height}&nologo=true"
+
+    max_retries = CONFIG.get("img_max_retries", 3)
+    retry_delay = CONFIG.get("img_retry_delay", 15)
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            inf(f"  [magenta]Pollinations AI[/] generating {label} ({width}×{height}) [attempt {attempt}/{max_retries}] ...")
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            r = requests.get(url, headers=headers, timeout=120)
+            _LAST_POLLINATIONS_TIME = time.time()
+
+            if r.status_code != 200:
+                warn(f"  Pollinations HTTP {r.status_code} for {label}: {r.text[:120]}")
+                if attempt < max_retries:
+                    time.sleep(retry_delay)
+                    continue
+                raise ImageGenerationError(f"Pollinations AI returned HTTP {r.status_code} for {label}")
+
+            if len(r.content) < CONFIG["img_min_file_bytes"]:
+                warn(f"  Pollinations image too small ({len(r.content)}B) — rejecting")
+                if attempt < max_retries:
+                    time.sleep(retry_delay)
+                    continue
+                raise ImageGenerationError(f"Pollinations AI returned undersized image for {label}")
+
+            img = Image.open(BytesIO(r.content)).convert("RGB")
+            if _is_blank_image(img):
+                warn(f"  Pollinations image is flat/blank — rejecting")
+                if attempt < max_retries:
+                    time.sleep(retry_delay)
+                    continue
+                raise ImageGenerationError(f"Pollinations AI returned blank/flat image for {label}")
+
+            _save_image(img, dest)
+            return True
+
+        except requests.RequestException as e:
+            _LAST_POLLINATIONS_TIME = time.time()
+            warn(f"  Pollinations network error for {label} (attempt {attempt}/{max_retries}): {e}")
+            if attempt < max_retries:
+                time.sleep(retry_delay)
+                continue
+            raise ImageGenerationError(f"Pollinations AI connection failed for {label}: {e}")
+        except Exception as e:
+            warn(f"  Pollinations error for {label} (attempt {attempt}/{max_retries}): {e}")
+            if attempt < max_retries:
+                time.sleep(retry_delay)
+                continue
+            raise ImageGenerationError(f"Pollinations AI image processing failed for {label}: {e}")
+
+    return False
+
+def _generate_one_image_agy(scene: str, slug: str, dest: Path, label: str) -> bool:
+    """Generates a single image using agy (Antigravity CLI / Imagen)."""
     expected_path = dest.parent / f"{slug}_src.png"
     max_retries   = CONFIG["img_max_retries"]
     retry_delay   = CONFIG["img_retry_delay"]
@@ -4093,12 +4154,10 @@ def _generate_one_image(scene: str, slug: str, dest: Path, label: str,
                 f"No image file appeared for {label} after {max_retries} attempts "
                 f"(expected at {expected_path}) — this is not a quota message, agy "
                 f"just isn't producing images right now. agy's last response: "
-                f"{last_error!r}. Try running `agy` manually with an image prompt "
-                f"to see what it actually does."
+                f"{last_error!r}."
             )
 
         if _copy_image_to_dest(img_path, dest):
-            db_img_save(db, url, img_key, dest)
             if img_path == expected_path:
                 try: expected_path.unlink()
                 except Exception: pass
@@ -4113,13 +4172,77 @@ def _generate_one_image(scene: str, slug: str, dest: Path, label: str,
             f"attempts (file too small or flat/blank) — not a quota issue."
         )
 
-    return True  # unreachable — loop always returns or raises
+    return True
+
+def _generate_one_image(scene: str, slug: str, dest: Path, label: str,
+                         db, url: str, width: int = None, height: int = None) -> bool:
+    """
+    Generates a single real image using the selected image engine (agy_fallback, pollinations, agy_only).
+    - If engine == 'pollinations' or fallback is active: uses Pollinations AI with exact width/height.
+    - If engine == 'agy_fallback': tries agy first, and switches to Pollinations AI on quota/failure.
+    - If engine == 'agy_only': tries agy and raises QuotaExceededError on quota hit.
+    """
+    global _FALLBACK_ACTIVE
+    img_key = f"img:{slug}"
+
+    w = width or CONFIG["render_w"]
+    h = height or CONFIG["render_h"]
+
+    saved = db_img_done(db, url, img_key)
+    if saved and Path(saved).exists() and Path(saved).stat().st_size > CONFIG["img_min_file_bytes"]:
+        if Path(saved) != dest:
+            try: shutil.copy(saved, dest)
+            except Exception: pass
+        ok(f"  {label} [dim]resumed from cache[/]")
+        return True
+
+    engine = CONFIG.get("image_engine", "agy_fallback")
+
+    # 1. Direct Pollinations or Active Fallback mode
+    if engine == "pollinations" or (engine == "agy_fallback" and _FALLBACK_ACTIVE):
+        if _generate_one_image_pollinations(scene, dest, w, h, label):
+            db_img_save(db, url, img_key, dest)
+            return True
+        return False
+
+    # 2. Try agy first
+    try:
+        if _generate_one_image_agy(scene, slug, dest, label):
+            db_img_save(db, url, img_key, dest)
+            return True
+    except QuotaExceededError as qe:
+        if engine == "agy_fallback":
+            warn(f"  ⚠  [yellow]agy quota reached[/] ({qe}) → [bold cyan]activating Pollinations AI fallback![/]")
+            _FALLBACK_ACTIVE = True
+            if _generate_one_image_pollinations(scene, dest, w, h, label):
+                db_img_save(db, url, img_key, dest)
+                return True
+        else:
+            raise  # In agy_only mode, bubble up to 6h quota_wait()
+
+    except ImageGenerationError as ige:
+        if engine == "agy_fallback":
+            warn(f"  ⚠  [yellow]agy image generation issue[/] ({ige}) → [bold cyan]falling back to Pollinations AI![/]")
+            _FALLBACK_ACTIVE = True
+            if _generate_one_image_pollinations(scene, dest, w, h, label):
+                db_img_save(db, url, img_key, dest)
+                return True
+        else:
+            raise
+
+    return True
 
 
 def phase_images(structured: dict, url: str, db, out_dir: Path) -> dict:
+    engine = CONFIG.get("image_engine", "agy_fallback")
+    engine_desc = ("Antigravity (with Pollinations fallback)" if engine == "agy_fallback"
+                   else "Pollinations AI Only" if engine == "pollinations"
+                   else f"Antigravity Only (quota=wait {CONFIG['quota_wait_hours']}h+resume)")
     ph("3", "AI IMAGES",
-       f"Sequential — 1 feature + all sections (unlimited) | quota=wait {CONFIG['quota_wait_hours']}h+resume")
-    _check_agy(live=True)
+       f"Sequential — 1 feature + all sections | Engine: {engine_desc} | Format: {CONFIG['image_format'].upper()}")
+
+    if engine != "pollinations":
+        _check_agy(live=True)
 
     idir = out_dir / "images"; idir.mkdir(exist_ok=True)
     sections    = structured.get("sections", [])
@@ -4139,13 +4262,15 @@ def phase_images(structured: dict, url: str, db, out_dir: Path) -> dict:
         ok("Feature image [dim]resumed from cache[/]")
     else:
         inf(f"Feature image → [dim italic]{feat_scene[:80]}[/]")
-        # QuotaExceededError bubbles to run_one_url
-        _generate_one_image(feat_scene, "feature_hero", feat_dest, "Feature", db, url)
+        # QuotaExceededError bubbles to run_one_url only in agy_only mode
+        _generate_one_image(feat_scene, "feature_hero", feat_dest, "Feature", db, url,
+                            width=CONFIG["feature_w"], height=CONFIG["feature_h"])
         if feat_dest.exists() and feat_dest.stat().st_size > CONFIG["img_min_file_bytes"]:
             ok(f"Feature image ✓ ({feat_dest.stat().st_size // 1024} KB)")
             generated_count += 1
-            inf(f"  Waiting {inter_delay}s ...")
-            time.sleep(inter_delay)
+            if engine != "pollinations":
+                inf(f"  Waiting {inter_delay}s ...")
+                time.sleep(inter_delay)
 
     # ── Per-section images (unlimited) ───────────────────────
     sec_paths = []
@@ -4171,8 +4296,9 @@ def phase_images(structured: dict, url: str, db, out_dir: Path) -> dict:
                      f"{sec.get('heading','')}. {' '.join(sec.get('paragraphs',['']))[:150]}")
             label = f"Sec {i:02d}"
 
-            # QuotaExceededError bubbles up to run_one_url
-            _generate_one_image(scene, slug, dest, label, db, url)
+            # QuotaExceededError bubbles up to run_one_url only in agy_only mode
+            _generate_one_image(scene, slug, dest, label, db, url,
+                                width=CONFIG["render_w"], height=CONFIG["render_h"])
 
             if dest.exists() and dest.stat().st_size > CONFIG["img_min_file_bytes"]:
                 ok(f"  {label} ✓ ({dest.stat().st_size // 1024} KB)")
@@ -4180,7 +4306,7 @@ def phase_images(structured: dict, url: str, db, out_dir: Path) -> dict:
 
             prog.advance(t)
 
-            if i < len(sections) - 1:
+            if i < len(sections) - 1 and engine != "pollinations":
                 inf(f"  Waiting {inter_delay}s ...")
                 time.sleep(inter_delay)
 
@@ -4584,6 +4710,11 @@ def main():
                         help="One-shot: import a local CSV of URLs into Firestore "
                              "for the signed-in account, then exit (does not run the pipeline)")
     parser.add_argument("--fresh", action="store_true", help="Wipe cached images/renders")
+    parser.add_argument("--image-engine", choices=["agy_fallback", "pollinations", "agy_only"], default=None,
+                        help="Image generation provider: agy_fallback (Antigravity with Pollinations fallback), "
+                             "pollinations (Pollinations AI only), agy_only (Antigravity only, 6h quota wait)")
+    parser.add_argument("--pollinations-delay", type=int, default=None,
+                        help="Delay in seconds between Pollinations AI image calls (default: 180)")
     parser.add_argument("--image-format", choices=list(IMAGE_FORMATS), default="webp",
                         help="Output format for generated/rendered images (default: webp)")
     parser.add_argument("--resolution", type=_resolution_arg, default="hd",
@@ -4605,6 +4736,23 @@ def main():
                              "image with the post title on it")
     args = parser.parse_args()
 
+    # Load any saved pipeline_config.json overrides
+    cfg_file = Path(os.environ.get("PIPELINE_CONFIG", "pipeline_config.json"))
+    if cfg_file.exists():
+        try:
+            stored_cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+            if "image_engine" in stored_cfg:
+                CONFIG["image_engine"] = stored_cfg["image_engine"]
+            if "pollinations_delay" in stored_cfg:
+                CONFIG["pollinations_delay"] = int(stored_cfg["pollinations_delay"])
+        except Exception:
+            pass
+
+    if args.image_engine:
+        CONFIG["image_engine"] = args.image_engine
+    if args.pollinations_delay is not None:
+        CONFIG["pollinations_delay"] = args.pollinations_delay
+
     _apply_image_settings(args.image_format, args.resolution,
                            args.feature_resolution, args.pin_resolution)
     CONFIG["feature_text_overlay"] = args.feature_text
@@ -4621,6 +4769,11 @@ def main():
     _check_agy(); ok("agy found on PATH.")
     if CONFIG["use_gpu"]: ok("GPU (CuPy) enabled.")
     else: inf("CPU mode.")
+    engine_desc = ("Antigravity (with Pollinations fallback)" if CONFIG["image_engine"] == "agy_fallback"
+                   else "Pollinations AI Only" if CONFIG["image_engine"] == "pollinations"
+                   else "Antigravity Only")
+    ok(f"Image Engine: [bold cyan]{engine_desc}[/] "
+       f"(Pollinations delay: {CONFIG['pollinations_delay']}s)")
     ok(f"Images: [cyan]{CONFIG['image_format'].upper()}[/] — "
        f"sections {CONFIG['render_w']}×{CONFIG['render_h']} "
        f"(text {'ON' if CONFIG['heading_text_overlay'] else 'off'}), "

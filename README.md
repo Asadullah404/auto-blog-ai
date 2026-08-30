@@ -2,23 +2,14 @@
 
 Extract an article from a URL → rewrite it for SEO **and GEO** (Generative
 Engine Optimization — being citable by AI answer engines, not just ranking in
-search) → generate AI images → render a finished page → publish it to
-WordPress with Rank Math SEO fields filled in. Runs one URL at a time from a
-CSV — which can be a plain local file or a **Google Drive share link that
-multiple PCs work from together** without re-doing each other's articles —
-checkpoints every phase in SQLite so it can be killed and resumed at any
-point, never substitutes a blank placeholder image for a real one, and ships
-as a ready-to-download Windows installer — no Python or command line required.
+search) → generate high-quality AI images (via **Google Antigravity / Imagen** with seamless **Pollinations AI** fallback) → render a finished responsive page → publish it to
+WordPress with Rank Math SEO fields filled in.
+
+Runs one URL at a time from **Firestore Cloud Sync** (shared live across multiple PCs with automatic claim locking, no re-uploading needed), checkpoints every phase in SQLite so it can be stopped and resumed at any point, provides **interactive link status switching** directly from the UI, never substitutes a blank placeholder image for a real one, and ships as a ready-to-download Windows installer — no coding or command line required.
 
 **📥 Download the app:** [github.com/Asadullah404/auto-blog-ai/releases/latest](https://github.com/Asadullah404/auto-blog-ai/releases/latest)
 — grab `Install ContentPipeline.exe` under **Assets** and double-click it.
 Full walkthrough in [§0](#0-quick-start--download-install--first-run-no-coding-required).
-
-This guide covers everything, start to finish: downloading and installing the
-app, one-time setup, the CSV format (including Google Drive multi-PC sync),
-every image/resolution option, both ways to run it (desktop app and command
-line), how auto-publish and resume/idempotency work, and how to build the
-installer yourself from source.
 
 ---
 
@@ -30,8 +21,8 @@ installer yourself from source.
 3. [One-time setup (do this once)](#3-one-time-setup-do-this-once)
 4. [The Control Panel (GUI)](#4-the-control-panel-gui)
 5. [Running from the command line](#5-running-from-the-command-line)
-6. [The CSV file — full format reference (incl. Google Drive multi-PC sync)](#6-the-csv-file--full-format-reference)
-7. [Image output — format, resolution & text overlay](#7-image-output--format-resolution--text-overlay)
+6. [Cloud Sync & Link Management (Firestore Multi-PC Sync)](#6-cloud-sync--link-management-firestore-multi-pc-sync)
+7. [Image Output & AI Engine Modes (Antigravity & Pollinations AI)](#7-image-output--format-resolution--text-overlay)
 8. [How auto-publish is controlled](#8-how-auto-publish-is-controlled)
 9. [How resume / idempotency works](#9-how-resume--idempotency-works)
 10. [Publishing articles you already generated](#10-publishing-articles-you-already-generated)
@@ -307,57 +298,54 @@ python pipeline_gui.py
 ```
 
 First run auto-installs `customtkinter` and `Pillow` if missing. The window
-has a sidebar with four tabs:
+has a modern dark interface with five dedicated tabs:
 
 ### 🏠 Dashboard
-- **▶ Start Pipeline / ■ Stop / ⏩ Resume Now / ⇪ Publish All Generated** — the main controls.
-  **Resume Now** is only useful while a quota wait is in progress (see
-  [§9](#9-how-resume--idempotency-works)) — it tells the pipeline to retry
-  immediately instead of sitting out the rest of the wait. If quota's genuinely
-  still exhausted it just picks the same countdown back up, so it's always
-  safe to click. Clicking it while nothing is waiting on quota does nothing.
+- **▶ Start Pipeline / ■ Stop / ⏩ Resume Now / ⇪ Publish All Generated** — main control center.
 - **Stat cards**: Total URLs, Pending, Completed, Failed (read live from your
-  CSV), and Published (read live from every article's `pipeline_state.db`).
-- **Batch Progress** bar — Completed ÷ Total from the CSV.
+  Firestore account / local sync), and Published (read live from article DBs).
+- **Batch Progress** bar — Completed ÷ Total URL counter.
 - **Latest Feature Image** — a live thumbnail of the most recently rendered
-  feature image, so you can eyeball image quality without leaving the app.
+  feature image, so you can inspect image quality without leaving the app.
 - **Recent Activity** — a rolling colorized tail of the log (green = success,
   amber = warning, red = error, blue = info). "View Full Log →" jumps to the
   Logs tab.
-- A pulsing dot + status text in the header shows Idle vs. Running.
+- A pulsing green dot + status text in the header displays Idle vs. Running.
+
+### ☁ Sync (Cloud Links & Status Management)
+- **Account Sign-in / Sign-up**: Securely sign in to your Firebase account to sync links across all your devices in real time.
+- **Upload CSV**: Upload a `.csv` list of URLs directly into your cloud repository (`URL`, `Category`, `Status`).
+- **Interactive Link Status Changer**: Every link row features an active **Status Dropdown** (`Pending`, `Done`, `Failed`). Change any link from `Done` or `Failed` back to `Pending` with a single click to re-queue it for processing!
+- **Real-Time Search**: Instant search and filtering across URLs and assigned categories.
 
 ### ⚙ Settings
-- **WordPress Connection**: Site URL, username, Application Password, **Test
-  Connection** button.
+- **WordPress Connection**: Site URL, username, Application Password, and **Test Connection** button.
 - **Publishing**: Live/Draft switch, Auto ON/OFF switch (see [§8](#8-how-auto-publish-is-controlled)),
   SEO plugin (Rank Math / None), image ALT text source (section heading / post title).
-- **Images**: shared output format (WebP / JPEG), then three independent cards:
-  - **Heading Images** — resolution + a checkbox for whether the section heading is pasted onto each section image.
-  - **Feature Image** — its own resolution + a checkbox for whether the post title is pasted onto it.
-  - **Pinterest Pin** — a toggle to also generate a tall pin image for the post, plus its own resolution.
-
-  Every resolution picker accepts a preset or **Custom…** width/height. See [§7](#7-image-output--format-resolution--text-overlay).
-- **Run**: CSV file picker (**Browse**, or just paste a Google Drive share
-  link directly into the field — see [§6](#6-the-csv-file--full-format-reference)
-  for multi-PC syncing), "Fresh run" checkbox (wipes cached images/renders
-  for a clean re-generation without re-scraping or re-writing text).
-- **💾 Save Settings** writes everything to `pipeline_config.json`.
+- **AI Image Provider / Engine**: Choose between:
+  1. `Antigravity (with Pollinations Fallback)` *(Recommended)* — Google Imagen primary, Pollinations AI fallback.
+  2. `Pollinations AI Only` — Generates all visuals via Pollinations AI with anti-spam cooldown.
+  3. `Antigravity Only` — Pure Antigravity with 6h quota countdown.
+- **Pollinations Cooldown Delay**: Set interval in seconds (default: 180s / 3 minutes) between Pollinations image calls.
+- **Image Formats & Dimensions**:
+  - **Shared format**: WebP (smaller file size, high quality) or JPEG.
+  - **Heading Images**: Resolution preset or custom `WIDTHxHEIGHT` + overlay text toggle.
+  - **Feature Image**: Independent resolution preset or custom dimensions + title overlay toggle.
+  - **Pinterest Pin**: Toggle to render & upload an extra tall Pinterest pin image + resolution picker.
+- **Run Options**: "Fresh run" checkbox (wipes cached images/renders for a clean re-generation).
+- **💾 Save Settings**: Writes locally to `pipeline_config.json` and syncs up to Firestore cloud for multi-device consistency.
 
 ### 📜 Logs
-The full live output of whatever's running (pipeline / connection test /
+The full live stream of whatever is running (pipeline / connection test /
 publish-all), colorized, with **Clear** and **Export…** (save to a `.txt` file).
 
 ### 📰 Articles
 Every article the pipeline has ever generated, pulled directly from each
-article's own `pipeline_state.db` — title, category, source URL, a thumbnail,
-and a **Published** / **Generated** status pill. Published articles get a
+article's own `pipeline_state.db` — title, category, source URL, thumbnail,
+and a **Published** / **Generated** status pill. Published articles include a
 **🔗 View Post** button (opens the live WordPress post); generated ones get a
 **📄 Local HTML** button (opens `final_output.html` in your browser). Filter
 by typing in the search box; **🔄** refreshes.
-
-All of this reads the *same* `pipeline_config.json` and `pipeline_output/`
-that the command-line tools use — the GUI is a control surface, not a
-separate system.
 
 ---
 
@@ -366,13 +354,15 @@ separate system.
 ### `automation.py` — full pipeline (phases 1–6)
 
 ```
-python automation.py --csv Links.csv [options]
+python automation.py [options]
 ```
 
 | Flag | Values | Default | Meaning |
 |---|---|---|---|
-| `--csv PATH` | local CSV path, or a Google Drive share link | prompts if omitted | The URL list to process — see [§6](#6-the-csv-file--full-format-reference) for the Drive-link, multi-PC case |
-| `--fresh` | flag | off | Wipe cached images/renders for this run (extract + rewrite text are still cached — only images/renders are cleared) |
+| `--import-csv PATH` | path to a `.csv` file | none | One-shot import of URLs from a local CSV into Firestore for your account, then exit |
+| `--image-engine` | `agy_fallback`, `pollinations`, `agy_only` | `agy_fallback` | AI Image provider engine (Antigravity with Pollinations fallback, Pollinations only, or Antigravity only) |
+| `--pollinations-delay` | integer (seconds) | `180` | Cooldown delay between consecutive Pollinations AI image requests |
+| `--fresh` | flag | off | Wipe cached images/renders for this run (extract + rewrite text remain cached) |
 | `--image-format` | `webp`, `jpeg` | `webp` | Output format for every generated/rendered image |
 | `--resolution` | `sd`, `hd`, `fhd`, `2k`, or `WIDTHxHEIGHT` | `hd` | Section/heading image resolution — see [§7](#7-image-output--format-resolution--text-overlay) |
 | `--feature-resolution` | same as above | same as `--resolution` | Feature/hero image resolution, set independently |
@@ -381,119 +371,34 @@ python automation.py --csv Links.csv [options]
 | `--no-heading-text` | flag | off (headings ON by default) | Do **not** paste section headings onto section images |
 | `--pinterest-pin` | flag | off | Also render (and, on publish, upload) a tall Pinterest pin image |
 
-It runs forever in a loop, pulling the next pending URL from the CSV until
-every row is `done`, then exits. `Ctrl+C` stops it safely — all progress up
-to that point is already checkpointed in SQLite; re-running resumes exactly
-where it left off. After phases 1–5 finish for a given article, it publishes
-automatically per your Live/Draft and AUTO settings ([§8](#8-how-auto-publish-is-controlled))
-before moving to the next URL.
-
-### `wordpress_publisher.py` — phase 6 (standalone)
-
-```
-python wordpress_publisher.py [options]
-```
-
-| Flag | Meaning |
-|---|---|
-| `--test` | Only verify the WordPress connection/credentials, then exit |
-| `--dry-run` | List what *would* be published, without posting anything |
-| `--root DIR` | Pipeline output folder to scan (default: `pipeline_output`) |
-
-Credentials come from `pipeline_config.json` (if present) or `.env`/environment
-variables (`WP_URL`, `WP_USER`, `WP_APP_PASSWORD`, `WP_STATUS`, `WP_SEO_PLUGIN`,
-`WP_ALT_FROM`, `WP_AUTO_PUBLISH`, `WP_VERIFY_SSL`).
-
 ---
 
-## 6. The CSV file — full format reference
+## 6. Cloud Sync & Link Management (Firestore Multi-PC Sync)
 
-One row per URL. Columns are comma-separated; extra whitespace is trimmed.
-Blank lines and lines starting with `#` are skipped.
+The pipeline uses **Firebase Authentication and Firestore** to synchronize your link queue across all your machines in real time.
 
-| Columns | Example | Meaning |
-|---|---|---|
-| 1 | `https://example.com/article` | URL only — no category assigned, not yet processed |
-| 2 (status) | `https://example.com/article,done` | 2nd column is `done` or `failed` (case-insensitive) → treated as **status**, no category |
-| 2 (category) | `https://example.com/article,Technology` | 2nd column is anything else → treated as **category** |
-| 3 | `https://example.com/article,Technology,done` | category **and** status together |
+### Multi-PC Distributed Processing
+Every machine signed into the same account coordinates seamlessly:
+1. **Automatic Claiming**: When a machine begins processing a URL, it claims the record in Firestore with a lease timestamp. Other PCs immediately see it as `Claimed` and skip to the next available `Pending` URL.
+2. **Crash & Disconnect Recovery**: If a machine crashes or goes offline mid-article, stale claims automatically expire after 6 hours and return to `Pending` so other devices can complete the job.
+3. **No Duplicate Work**: Completed URLs are marked `done` in Firestore and never processed twice.
+4. **Interactive Status Control**: You can manually change any link's status between `Pending`, `Done`, and `Failed` at any time from the GUI's **Sync** tab.
 
-**How the 2-column case is disambiguated:** if the second value is exactly
-`done` or `failed` it's a status; otherwise it's treated as a category. This
-means your old 2-column `url,done` CSVs keep working unchanged after
-upgrading — no migration needed.
+### CSV Import Format
+You can import URLs from a CSV file via the GUI or using `--import-csv file.csv`:
 
-**What the category does:** if a row has a category, it's forced onto the
-article's `category` field right after the SEO rewrite step — overriding
-whatever category the AI would have picked on its own — and that override is
-saved into the article's cache, so it's still correct even if you publish it
-later with `wordpress_publisher.py` standalone. `wordpress_publisher.py`
-creates that WordPress category if it doesn't already exist.
-
-**Status values:**
-- *(empty)* — pending, will be picked up next
-- `done` — fully processed, permanently skipped on future runs
-- `failed` — 3 consecutive crashes on this URL, permanently skipped (edit the
-  CSV and clear the status to retry it)
-- `pending:<epoch>:<hostname>` — claimed by a specific PC the moment it
-  started that URL (see **Google Drive sync** below). Written automatically;
-  you never type this by hand.
-
-The pipeline reloads the CSV before picking each URL, so you can add/edit
-rows (including categories) while it's running.
-
-### Google Drive sync — running the same list from multiple PCs
-
-Pass a **Google Drive share link** as `--csv` (CLI) or paste it straight into
-the CSV field in the GUI, instead of a local file path:
-
-```
-python automation.py --csv "https://drive.google.com/file/d/1AbCDefGhIJKlmnOP/view?usp=sharing"
+```csv
+https://example.com/first-article
+https://example.com/second-article,Technology
+https://example.com/third-article,Science,done
+https://example.com/fourth-article,pending
 ```
 
-Every machine pointed at the same link works off one shared list:
-- Before picking a URL, it downloads the latest copy from Drive — so it sees
-  claims and completions any other PC has already made.
-- The instant it picks a URL, it writes `pending:<unix-timestamp>:<hostname>`
-  into that row and uploads the change immediately — announcing "I'm working
-  this" before any real work starts, so a second PC reading the same file a
-  moment later skips it.
-- If a PC crashes or is closed mid-article, its `pending` claim is simply
-  left in the file — any machine that sees a claim older than
-  `csv_pending_stale_hours` (`automation.py` `CONFIG`, default **3 hours**)
-  treats it as abandoned and safely reclaims the row. Nothing gets
-  permanently stuck waiting on a machine that's gone.
-- `done` and `failed` behave exactly as in the local-file case, and are
-  never reclaimed.
+- **Column 1**: Article URL (required).
+- **Column 2**: Category name (e.g. `Technology`, `Fitness`, `AI`) or Status (`done`, `failed`, `pending`).
+- **Column 3** (optional): Status if Category is provided in Column 2.
 
-**One-time setup (per Google account, not per PC):**
-1. Go to [Google Cloud Console](https://console.cloud.google.com/) →
-   create a project (or use an existing one) → **APIs & Services → Credentials**.
-2. **Create Credentials → OAuth client ID** → Application type **Desktop app** → Create.
-3. Click **Download JSON** on the client you just created.
-4. Save that file as **`credentials.json`** directly next to `automation.py`
-   (or next to `ContentPipeline.exe`, if using the installed app).
-5. Upload your CSV to Google Drive as a normal file (not a Google Sheet —
-   keep it a `.csv`), and grab its share link.
-
-The **first** run on a given PC opens a browser window asking you to sign in
-with your Google account and approve access — do that once. It then caches
-a `token.json` next to `automation.py` and never prompts again on that
-machine. Run the same `credentials.json` + sign-in flow on each additional
-PC you want to share the list with (each PC gets its own `token.json`; the
-`credentials.json` OAuth client can be reused across all of them).
-
-If `credentials.json` is missing when you pass a Drive link, the pipeline
-stops with a clear message explaining exactly this setup, instead of failing
-unhelpfully.
-
-Example file:
-```
-https://contabo.com/blog/what-is-a-gpu,done
-https://blog.imaginationtech.com/imagination-chiplets,Semiconductors
-https://example.com/some-ai-article,AI,done
-https://example.com/uncategorized-article
-```
+All imported links immediately populate into your account's cloud repository and can be filtered, categorized, or have their status adjusted in real time.
 
 ---
 
@@ -504,6 +409,18 @@ Controlled by CLI flags (see [§5](#5-running-from-the-command-line)) or the
 other setting — resolution and whether text is pasted on — is independent
 **per image type**: section/heading images, the feature/hero image, and the
 optional Pinterest pin.
+
+### AI Image Provider & Fallback Engine
+The pipeline supports multiple image engines configured via `--image-engine` or the GUI:
+
+| Engine Mode | Flag / Config Key | Description |
+|---|---|---|
+| **Antigravity (with Pollinations Fallback)** *(default)* | `agy_fallback` | Uses Google `agy` (Imagen) as primary. If quota is exhausted or generation fails, seamlessly falls back to **Pollinations AI** so the pipeline never halts. |
+| **Pollinations AI Only** | `pollinations` | Generates all images directly via Pollinations AI at the exact configured dimensions with an anti-spam cooldown. |
+| **Antigravity Only** | `agy_only` | Uses `agy` exclusively and enters a 6-hour quota wait countdown on quota hits. |
+
+**Pollinations Cooldown Delay:**
+When generating via Pollinations AI, the pipeline enforces a configurable interval (default `--pollinations-delay 180` seconds / 3 minutes) between image requests to ensure polite, non-spamming operation.
 
 ### Format
 | Value | File extension | Notes |

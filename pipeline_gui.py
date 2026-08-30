@@ -88,6 +88,8 @@ DEFAULTS = {
     "alt_from":     "heading",
     "fresh":        False,
     "verify_ssl":   True,
+    "image_engine":         "agy_fallback",  # "agy_fallback" | "pollinations" | "agy_only"
+    "pollinations_delay":   180,             # 3 minutes default
     "image_format":         "webp",
     "image_resolution":     "hd",      # heading/section images
     "feature_resolution":   "hd",      # feature image — independent of the above
@@ -97,6 +99,12 @@ DEFAULTS = {
     "pinterest_pin":        False,     # also render + upload a Pinterest pin image
 }
 
+ENGINE_LABELS = {
+    "Antigravity (with Pollinations Fallback)": "agy_fallback",
+    "Pollinations AI Only":                     "pollinations",
+    "Antigravity Only (6h Quota Wait)":         "agy_only",
+}
+ENGINE_LABELS_REV = {v: k for k, v in ENGINE_LABELS.items()}
 SEO_LABELS = {"Rank Math (free)": "rankmath", "None": "none"}
 SEO_LABELS_REV = {v: k for k, v in SEO_LABELS.items()}
 ALT_LABELS = {"Section heading": "heading", "Post title": "title"}
@@ -546,8 +554,6 @@ class ControlPanel(ctk.CTk):
         self.signin_overlay.grid_remove()
         self._update_account_header(profile)
         self._auth_tick()
-        if self._needs_setup():
-            self.after(250, self._show_setup_wizard)
 
     def _auth_tick(self):
         """Refreshes the Firebase ID token roughly every 45 min (tokens last
@@ -831,6 +837,12 @@ class ControlPanel(ctk.CTk):
             picker["e_w"].configure(state="disabled")
             picker["e_h"].configure(state="disabled")
 
+    def _on_engine_change(self, choice):
+        """Enable/disable Pollinations delay field based on selected image engine."""
+        is_agy_only = ENGINE_LABELS.get(choice) == "agy_only"
+        if hasattr(self, "e_pol_delay"):
+            self.e_pol_delay.configure(state="disabled" if is_agy_only else "normal")
+
     # ── DASHBOARD ─────────────────────────────────────────────
     def _build_dashboard(self, page):
         page.grid_rowconfigure(0, weight=1)
@@ -1110,22 +1122,65 @@ class ControlPanel(ctk.CTk):
         "pending": ("slate", "#e5e7eb"),
     }
 
+    def _on_change_link_status(self, url, choice, menu_widget):
+        new_status = choice.lower()
+        if not (self.id_token and self.uid):
+            self._log("⚠ Please sign in to update link status.\n")
+            return
+
+        for r in self._links_cache:
+            if r.get("url") == url:
+                r["status"] = new_status
+                break
+
+        fg_key, text_color = self._STATUS_STYLE.get(new_status, self._STATUS_STYLE["pending"])
+        menu_widget.configure(fg_color=COLORS[fg_key], button_color=COLORS[fg_key],
+                              button_hover_color=COLORS[fg_key], text_color=text_color)
+        self._log(f"→ Link status updated to [bold]{new_status.capitalize()}[/]: {url}\n")
+        threading.Thread(target=self._set_link_status_worker,
+                         args=(self.uid, self.id_token, url, new_status), daemon=True).start()
+
+    def _set_link_status_worker(self, uid, id_token, url, new_status):
+        try:
+            fs.set_status(uid, id_token, url, new_status)
+            self.after(0, self._refresh_dashboard)
+        except Exception as e:
+            self.log_q.put(f"⚠ Could not update link status in Firestore: {e}\n")
+
     def _link_row(self, parent, r):
-        status = r.get("status") or "pending"
+        status = (r.get("status") or "pending").lower()
+        url = r.get("url") or ""
         row = ctk.CTkFrame(parent, corner_radius=8, fg_color=COLORS["card"],
                            border_width=1, border_color=COLORS["border"])
         row.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(row, text=r.get("url") or "", anchor="w", font=ctk.CTkFont(size=12),
-                    text_color=COLORS["text"], wraplength=560, justify="left").grid(
+        ctk.CTkLabel(row, text=url, anchor="w", font=ctk.CTkFont(size=12),
+                    text_color=COLORS["text"], wraplength=540, justify="left").grid(
                         row=0, column=0, sticky="w", padx=(14, 6), pady=(10, 2))
         ctk.CTkLabel(row, text=r.get("category") or "Uncategorized", anchor="w",
                     font=ctk.CTkFont(size=11), text_color=COLORS["text_mute"]).grid(
                         row=1, column=0, sticky="w", padx=(14, 6), pady=(0, 10))
+
         fg_key, text_color = self._STATUS_STYLE.get(status, self._STATUS_STYLE["pending"])
-        ctk.CTkLabel(row, text=status.capitalize(), fg_color=COLORS[fg_key], text_color=text_color,
-                    corner_radius=8, padx=10, pady=4,
-                    font=ctk.CTkFont(size=10, weight="bold")).grid(
-                        row=0, column=1, rowspan=2, sticky="e", padx=14)
+        values = ["Pending", "Done", "Failed"]
+        if status == "claimed":
+            values = ["Claimed", "Pending", "Done", "Failed"]
+
+        status_menu = ctk.CTkOptionMenu(
+            row,
+            values=values,
+            width=100,
+            height=28,
+            corner_radius=8,
+            fg_color=COLORS[fg_key],
+            button_color=COLORS[fg_key],
+            button_hover_color=COLORS[fg_key],
+            text_color=text_color,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            dynamic_resizing=False,
+            command=lambda choice, u=url: self._on_change_link_status(u, choice, status_menu)
+        )
+        status_menu.set(status.capitalize())
+        status_menu.grid(row=0, column=1, rowspan=2, sticky="e", padx=14)
         return row
 
     # ── SETTINGS ──────────────────────────────────────────────
@@ -1186,7 +1241,26 @@ class ControlPanel(ctk.CTk):
         self.alt_menu.pack(fill="x", pady=(2, 0))
 
         # Images — format (shared) + independent settings per image type
-        img = self._card(s, "🖼", "Images", "Output format, and separate resolution/text-overlay controls per image type")
+        img = self._card(s, "🖼", "Images", "AI provider engine, format, and separate resolution/text-overlay controls per image type")
+
+        ctk.CTkLabel(img, text="AI Image Provider / Engine", anchor="w", text_color=COLORS["text_dim"]).pack(fill="x")
+        self.engine_menu = ctk.CTkOptionMenu(img, values=list(ENGINE_LABELS.keys()),
+                                             command=lambda choice: self._on_engine_change(choice))
+        self.engine_menu.set(ENGINE_LABELS_REV.get(self.cfg.get("image_engine", "agy_fallback"),
+                                                   "Antigravity (with Pollinations Fallback)"))
+        self.engine_menu.pack(fill="x", pady=(2, 8))
+
+        self.pol_delay_row = ctk.CTkFrame(img, fg_color="transparent")
+        self.pol_delay_row.pack(fill="x", pady=(0, 10))
+        ctk.CTkLabel(self.pol_delay_row, text="Pollinations Cooldown Delay", text_color=COLORS["text_dim"]).pack(side="left")
+        self.e_pol_delay = ctk.CTkEntry(self.pol_delay_row, width=80, height=32, placeholder_text="180",
+                                        fg_color=COLORS["bg_alt"], border_color=COLORS["border"])
+        self.e_pol_delay.insert(0, str(self.cfg.get("pollinations_delay", 180)))
+        self.e_pol_delay.pack(side="left", padx=(8, 8))
+        ctk.CTkLabel(self.pol_delay_row, text="sec  (3m anti-spam gap recommended)",
+                     text_color=COLORS["text_mute"], font=ctk.CTkFont(size=10)).pack(side="left")
+        self._on_engine_change(self.engine_menu.get())
+
         ctk.CTkLabel(img, text="Image format", anchor="w", text_color=COLORS["text_dim"]).pack(fill="x")
         self.format_menu = ctk.CTkOptionMenu(img, values=list(FORMAT_LABELS.keys()))
         self.format_menu.set(FORMAT_LABELS_REV.get(self.cfg.get("image_format", "webp"),
@@ -1384,6 +1458,12 @@ class ControlPanel(ctk.CTk):
         self.after(550, self._pulse_tick)
 
     def collect_cfg(self):
+        pol_delay = 180
+        if hasattr(self, "e_pol_delay"):
+            val = self.e_pol_delay.get().strip()
+            if val.isdigit():
+                pol_delay = int(val)
+
         return {
             "base_url":     self.e_url.get().strip().rstrip("/"),
             "username":     self.e_user.get().strip(),
@@ -1394,6 +1474,8 @@ class ControlPanel(ctk.CTk):
             "alt_from":     ALT_LABELS.get(self.alt_menu.get(), "heading"),
             "fresh":        bool(self.fresh_var.get()),
             "verify_ssl":   self.cfg.get("verify_ssl", True),
+            "image_engine":         ENGINE_LABELS.get(self.engine_menu.get(), "agy_fallback") if hasattr(self, "engine_menu") else "agy_fallback",
+            "pollinations_delay":   pol_delay,
             "image_format":         FORMAT_LABELS.get(self.format_menu.get(), "webp"),
             "image_resolution":     self._resolve_resolution("image_resolution"),
             "feature_resolution":   self._resolve_resolution("feature_resolution"),
@@ -1414,6 +1496,13 @@ class ControlPanel(ctk.CTk):
         self.auto_var.set(bool(cfg.get("auto_publish", True)))
         self.seo_menu.set(SEO_LABELS_REV.get(cfg.get("seo_plugin", "rankmath"), "Rank Math (free)"))
         self.alt_menu.set(ALT_LABELS_REV.get(cfg.get("alt_from", "heading"), "Section heading"))
+        if hasattr(self, "engine_menu"):
+            self.engine_menu.set(ENGINE_LABELS_REV.get(cfg.get("image_engine", "agy_fallback"),
+                                                       "Antigravity (with Pollinations Fallback)"))
+        if hasattr(self, "e_pol_delay"):
+            self.e_pol_delay.delete(0, "end")
+            self.e_pol_delay.insert(0, str(cfg.get("pollinations_delay", 180)))
+            self._on_engine_change(self.engine_menu.get())
         self.format_menu.set(FORMAT_LABELS_REV.get(cfg.get("image_format", "webp"), "WebP (smaller files)"))
         self.fresh_var.set(bool(cfg.get("fresh", False)))
         self.heading_text_var.set(bool(cfg.get("heading_text_overlay", True)))
@@ -1459,10 +1548,12 @@ class ControlPanel(ctk.CTk):
             cloud_cfg = fs.get_config(uid, id_token)
         except Exception as e:
             self.log_q.put(f"⚠ Could not load settings from the cloud: {e}\n")
-            return
+            cloud_cfg = None
+
         if cloud_cfg:
             merged = dict(DEFAULTS)
             merged.update(cloud_cfg)
+            self.cfg = merged
             save_cfg(merged)
             self.after(0, lambda: self._apply_cfg_to_widgets(merged))
             self.log_q.put("☁ Settings synced from the cloud.\n")
@@ -1470,6 +1561,11 @@ class ControlPanel(ctk.CTk):
             # Nothing saved to this account yet — seed the cloud from whatever
             # is on disk right now (a fresh install, or a first-time sign-in).
             self._push_cfg_to_cloud()
+
+        # Only prompt for WordPress setup if credentials are truly missing
+        # after checking both cloud and local configuration.
+        if self._needs_setup():
+            self.after(250, self._show_setup_wizard)
 
     def _save(self):
         self.cfg = self.collect_cfg()
@@ -1580,10 +1676,19 @@ class ControlPanel(ctk.CTk):
             self._log("⏳ Connecting to your account…\n")
             self._await_auth(self.on_start, on_timeout=self._start_signin_timeout)
             return
-        args = ["--image-format", FORMAT_LABELS.get(self.format_menu.get(), "webp"),
-                "--resolution", self._resolve_resolution("image_resolution"),
-                "--feature-resolution", self._resolve_resolution("feature_resolution"),
-                "--pin-resolution", self._resolve_resolution("pin_resolution")]
+        engine_val = ENGINE_LABELS.get(self.engine_menu.get(), "agy_fallback") if hasattr(self, "engine_menu") else "agy_fallback"
+        pol_delay_val = self.e_pol_delay.get().strip() if hasattr(self, "e_pol_delay") else "180"
+        if not pol_delay_val.isdigit():
+            pol_delay_val = "180"
+
+        args = [
+            "--image-engine", engine_val,
+            "--pollinations-delay", pol_delay_val,
+            "--image-format", FORMAT_LABELS.get(self.format_menu.get(), "webp"),
+            "--resolution", self._resolve_resolution("image_resolution"),
+            "--feature-resolution", self._resolve_resolution("feature_resolution"),
+            "--pin-resolution", self._resolve_resolution("pin_resolution"),
+        ]
         if self.fresh_var.get():
             args.append("--fresh")
         if self.feature_text_var.get():
