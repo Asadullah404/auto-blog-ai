@@ -3186,20 +3186,32 @@ def firestore_import_csv(uid: str, id_token: str, csv_path: Path) -> dict:
 
 
 def fs_mark_done(uid: str, id_token: str, url: str):
-    fs.set_status(uid, id_token, url, "done")
-    ok(f"[dim]Firestore updated → [cyan]{url}[/] marked [green]done[/]")
+    try:
+        fresh_tok, fresh_u = firebase_auth.get_valid_id_token()
+        fs.set_status(fresh_u or uid, fresh_tok or id_token, url, "done")
+        ok(f"[dim]Firestore updated → [cyan]{url}[/] marked [green]done[/]")
+    except Exception as e:
+        warn(f"Could not update Firestore status for {url}: {e}")
 
 
 def fs_mark_failed(uid: str, id_token: str, url: str):
-    fs.set_status(uid, id_token, url, "failed")
+    try:
+        fresh_tok, fresh_u = firebase_auth.get_valid_id_token()
+        fs.set_status(fresh_u or uid, fresh_tok or id_token, url, "failed")
+    except Exception as e:
+        warn(f"Could not update Firestore status for {url}: {e}")
 
 
 def fs_claim(uid: str, id_token: str, url: str):
     """Claims a row for this machine — stamps status "claimed" with this
     hostname + timestamp, so another machine sharing the same account skips
     it instead of re-doing the same article, until the claim goes stale."""
-    fs.set_status(uid, id_token, url, "claimed",
-                 claimed_by=platform.node().lower(), claimed_at=fs.now_iso())
+    try:
+        fresh_tok, fresh_u = firebase_auth.get_valid_id_token()
+        fs.set_status(fresh_u or uid, fresh_tok or id_token, url, "claimed",
+                     claimed_by=platform.node().lower(), claimed_at=fs.now_iso())
+    except Exception as e:
+        warn(f"Could not claim Firestore link for {url}: {e}")
 
 
 def fs_pending(uid: str, id_token: str, stale_hours: float = 3) -> list[dict]:
@@ -3207,7 +3219,12 @@ def fs_pending(uid: str, id_token: str, stale_hours: float = 3) -> list[dict]:
     enough (stale_hours) that whatever machine placed it has presumably
     crashed — see firestore_client.query_pending. "done"/"failed" are
     terminal and always excluded."""
-    return fs.query_pending(uid, id_token, stale_hours)
+    try:
+        fresh_tok, fresh_u = firebase_auth.get_valid_id_token()
+        return fs.query_pending(fresh_u or uid, fresh_tok or id_token, stale_hours)
+    except Exception as e:
+        warn(f"Could not fetch pending links from Firestore: {e}")
+        return []
 
 # ─────────────────────────────────────────────────────────────
 # QUOTA WAIT — 6-hour countdown, then continues
@@ -4113,7 +4130,12 @@ def _generate_one_image_myserver(scene: str, dest: Path, width: int, height: int
     """Generates an image via custom GPU server (e.g. Colab / ngrok RealVis / SD endpoint)."""
     server_url = CONFIG.get("server_url", "").strip()
     if not server_url:
-        raise ImageGenerationError("Custom server URL is empty or not provided. Please provide --server-url.")
+        raise ImageGenerationError("Custom server URL is empty. Please provide --server-url or configure it.")
+
+    # Ensure URL ends cleanly with /generate
+    server_url = server_url.rstrip("/")
+    if not server_url.endswith("/generate"):
+        server_url = server_url + "/generate"
 
     clean_prompt = re.sub(r'[\r\n\t]+', ' ', scene).strip()
     if not any(k in clean_prompt.lower() for k in ["photorealistic", "photo", "cinematic", "photography"]):
@@ -4145,11 +4167,14 @@ def _generate_one_image_myserver(scene: str, dest: Path, width: int, height: int
             r = requests.post(server_url, json=payload, headers=headers, timeout=180)
 
             if r.status_code != 200:
-                warn(f"  My Server HTTP {r.status_code} for {label}: {r.text[:120]}")
+                if r.status_code == 404:
+                    warn(f"  ⚠ My Server HTTP 404: Ngrok/Colab tunnel is offline, expired, or URL has changed ({server_url})")
+                else:
+                    warn(f"  My Server HTTP {r.status_code} for {label}: {r.text[:120]}")
                 if attempt < max_retries:
                     time.sleep(retry_delay)
                     continue
-                raise ImageGenerationError(f"My Server returned HTTP {r.status_code} for {label}")
+                raise ImageGenerationError(f"My Server returned HTTP {r.status_code} for {label} (Check Colab ngrok tunnel)")
 
             if len(r.content) < CONFIG["img_min_file_bytes"]:
                 warn(f"  My Server image too small ({len(r.content)}B) — rejecting")
@@ -4262,7 +4287,7 @@ def _generate_one_image(scene: str, slug: str, dest: Path, label: str,
                          db, url: str, width: int = None, height: int = None) -> bool:
     """
     Generates a single real image using the selected image engine (agy_fallback, pollinations, agy_only, my_server).
-    - If engine == 'my_server': uses custom Colab / ngrok GPU server with exact width/height.
+    - If engine == 'my_server': uses custom Colab / ngrok GPU server with exact width/height, falling back to Pollinations AI on server outage/404.
     - If engine == 'pollinations' or fallback is active: uses Pollinations AI with exact width/height.
     - If engine == 'agy_fallback': tries agy first, and switches to Pollinations AI on quota/failure.
     - If engine == 'agy_only': tries agy and raises QuotaExceededError on quota hit.
@@ -4283,11 +4308,18 @@ def _generate_one_image(scene: str, slug: str, dest: Path, label: str,
 
     engine = CONFIG.get("image_engine", "agy_fallback")
 
-    # 1. Custom GPU Server mode
+    # 1. Custom GPU Server mode (with automatic Pollinations fallback if server is offline or 404)
     if engine == "my_server":
-        if _generate_one_image_myserver(scene, dest, w, h, label):
-            db_img_save(db, url, img_key, dest)
-            return True
+        try:
+            if _generate_one_image_myserver(scene, dest, w, h, label):
+                db_img_save(db, url, img_key, dest)
+                return True
+        except ImageGenerationError as ige:
+            warn(f"  ⚠ [yellow]My Server unavailable[/] ({ige}) → [bold cyan]seamlessly falling back to Pollinations AI![/]")
+            if _generate_one_image_pollinations(scene, dest, w, h, label):
+                db_img_save(db, url, img_key, dest)
+                return True
+            raise
         return False
 
     # 2. Direct Pollinations or Active Fallback mode
@@ -4917,6 +4949,11 @@ def main():
 
     try:
         while True:
+            # Ensure fresh valid ID token for long-running runs
+            fresh_tok, fresh_u = firebase_auth.get_valid_id_token()
+            if fresh_tok:
+                id_token, uid = fresh_tok, fresh_u
+
             pending = fs_pending(uid, id_token, CONFIG["csv_pending_stale_hours"])
 
             if not pending:

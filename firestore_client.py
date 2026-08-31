@@ -141,9 +141,45 @@ def _raise_for_status(resp):
                               f"{resp.status_code}: {resp.text}")
 
 
+def _firestore_request(method: str, url: str, id_token: str, **kwargs) -> requests.Response:
+    """Makes a Firestore HTTP request with:
+    1. Automatic ID token renewal on HTTP 401 (Missing or invalid authentication).
+    2. Automatic retry with exponential backoff on transient network / DNS glitches.
+    """
+    import firebase_auth
+    max_attempts = 3
+    current_token = id_token
+
+    for attempt in range(1, max_attempts + 1):
+        headers = dict(kwargs.pop("headers", None) or {})
+        if current_token:
+            headers["Authorization"] = f"Bearer {current_token}"
+        kwargs["headers"] = headers
+        if "timeout" not in kwargs:
+            kwargs["timeout"] = 30
+
+        try:
+            resp = requests.request(method, url, **kwargs)
+            if resp.status_code == 401 and attempt < max_attempts:
+                # Token expired — refresh from Firebase refresh token
+                fresh_token, _ = firebase_auth.get_valid_id_token()
+                if fresh_token:
+                    current_token = fresh_token
+                    continue
+            return resp
+        except (requests.RequestException, OSError) as e:
+            if attempt < max_attempts:
+                time.sleep(1.0 * attempt)
+                fresh_token, _ = firebase_auth.get_valid_id_token()
+                if fresh_token:
+                    current_token = fresh_token
+                continue
+            raise FirestoreError(f"Firestore network request failed ({e})")
+
+
 # ── Document reads/writes ───────────────────────────────────────
 def get_doc(uid: str, id_token: str, doc_id: str, collection: str = "links") -> dict | None:
-    resp = requests.get(_doc_url(uid, doc_id, collection), headers=_headers(id_token), timeout=30)
+    resp = _firestore_request("GET", _doc_url(uid, doc_id, collection), id_token)
     if resp.status_code == 404:
         return None
     _raise_for_status(resp)
@@ -161,14 +197,9 @@ def patch_doc(uid: str, id_token: str, doc_id: str, fields: dict, *,
     if exists is not None:
         params.append(("currentDocument.exists", "true" if exists else "false"))
     body = {"fields": _encode_fields(fields)}
-    resp = requests.patch(_doc_url(uid, doc_id, collection), headers=_headers(id_token),
-                          params=params, json=body, timeout=30)
+    resp = _firestore_request("PATCH", _doc_url(uid, doc_id, collection), id_token,
+                              params=params, json=body)
     if exists is not None and not resp.ok:
-        # Precondition not met — Firestore returns 404 NOT_FOUND for
-        # exists=true against a missing doc, and 400 FAILED_PRECONDITION for
-        # exists=false against an existing one. Either way, since the caller
-        # explicitly asked for a precondition check, any failure here just
-        # means "try the other branch" rather than a real error.
         return False
     _raise_for_status(resp)
     return True
@@ -274,9 +305,8 @@ def run_query(uid: str, id_token: str, filters: list | None = None,
         structured["limit"] = limit
 
     parent = f"projects/{_project_id()}/databases/(default)/documents/users/{uid}"
-    resp = requests.post(f"{FIRESTORE_HOST}/v1/{parent}:runQuery",
-                         headers=_headers(id_token),
-                         json={"structuredQuery": structured}, timeout=30)
+    resp = _firestore_request("POST", f"{FIRESTORE_HOST}/v1/{parent}:runQuery", id_token,
+                             json={"structuredQuery": structured})
     _raise_for_status(resp)
 
     results = []
@@ -314,12 +344,11 @@ def run_count(uid: str, id_token: str, filters: list | None = None) -> int:
         structured["where"] = (field_filters[0] if len(field_filters) == 1
                                else {"compositeFilter": {"op": "AND", "filters": field_filters}})
     parent = f"projects/{_project_id()}/databases/(default)/documents/users/{uid}"
-    resp = requests.post(f"{FIRESTORE_HOST}/v1/{parent}:runAggregationQuery",
-                         headers=_headers(id_token),
-                         json={"structuredAggregationQuery": {
-                             "structuredQuery": structured,
-                             "aggregations": [{"alias": "count", "count": {}}],
-                         }}, timeout=30)
+    resp = _firestore_request("POST", f"{FIRESTORE_HOST}/v1/{parent}:runAggregationQuery", id_token,
+                             json={"structuredAggregationQuery": {
+                                 "structuredQuery": structured,
+                                 "aggregations": [{"alias": "count", "count": {}}],
+                             }})
     _raise_for_status(resp)
     for item in resp.json():
         result = item.get("result")

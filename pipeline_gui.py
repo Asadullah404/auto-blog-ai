@@ -445,6 +445,9 @@ class ServerUrlModal(ctk.CTkToplevel):
         ctk.CTkButton(btns, text="Cancel", fg_color="transparent",
                       hover_color=COLORS["card_alt"], text_color=COLORS["text_mute"],
                       command=self._cancel).pack(side="left")
+        ctk.CTkButton(btns, text="🔍 Test Connection", height=38, fg_color=COLORS["slate"],
+                      hover_color=COLORS["slate_hover"], font=ctk.CTkFont(size=12, weight="bold"),
+                      command=self._test_conn).pack(side="left", padx=8)
         ctk.CTkButton(btns, text="Start Pipeline", height=38, fg_color=COLORS["accent"],
                       hover_color=COLORS["accent_hover"], font=ctk.CTkFont(size=13, weight="bold"),
                       command=self._submit).pack(side="right")
@@ -462,10 +465,49 @@ class ServerUrlModal(ctk.CTkToplevel):
         self.destroy()
         self.on_done(None)
 
+    def _test_conn(self):
+        url = self.e_url.get().strip()
+        if not url:
+            self.hint.configure(text="Please enter a server URL first.", text_color=COLORS["amber"])
+            return
+        url = url.rstrip("/")
+        if not (url.startswith("http://") or url.startswith("https://")):
+            url = "https://" + url
+        if not url.endswith("/generate"):
+            url = url + "/generate"
+
+        self.hint.configure(text="Testing server connection...", text_color=COLORS["text_dim"])
+
+        def _worker():
+            try:
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                    "ngrok-skip-browser-warning": "69420"
+                }
+                payload = {
+                    "prompt": "test connection",
+                    "width": 64,
+                    "height": 64,
+                    "steps": 1
+                }
+                r = requests.post(url, json=payload, headers=headers, timeout=12)
+                if r.status_code == 200 or (r.status_code not in (404, 502, 503) and "<!doctype html>" not in r.text.lower()):
+                    self.after(0, lambda: self.hint.configure(text="✓ Server is online & ready!", text_color=COLORS["green"]))
+                else:
+                    self.after(0, lambda: self.hint.configure(
+                        text=f"⚠ Server returned HTTP {r.status_code} (Tunnel offline/404 — check Colab)",
+                        text_color=COLORS["red"]))
+            except Exception as e:
+                self.after(0, lambda: self.hint.configure(
+                    text=f"⚠ Connection failed: {e}",
+                    text_color=COLORS["red"]))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _submit(self):
         url = self.e_url.get().strip()
         if not url:
-            self.hint.configure(text="Please enter a valid server URL.")
+            self.hint.configure(text="Please enter a valid server URL.", text_color=COLORS["amber"])
             return
 
         # Clean and normalize URL
@@ -1156,8 +1198,6 @@ class ControlPanel(ctk.CTk):
         except Exception as e:
             if self._is_quota_error(e):
                 self._enter_fs_backoff()
-            else:
-                self.log_q.put(f"⚠ Could not refresh stats from Firestore: {e}\n")
             return
         self.after(0, lambda: self._apply_dashboard_stats(stats))
 
