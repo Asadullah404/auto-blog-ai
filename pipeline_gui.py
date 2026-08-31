@@ -189,6 +189,40 @@ def _from_env():
     return out
 
 
+def _normalize_display_links(val):
+    """Safely normalizes display_links into a list of dicts: [{'title': str, 'url': str}, ...].
+    Handles list of dicts, JSON strings, Python repr strings, or empty/None values."""
+    if isinstance(val, str):
+        val = val.strip()
+        if val:
+            try:
+                import ast
+                parsed = json.loads(val) if val.startswith("[") else ast.literal_eval(val)
+                if isinstance(parsed, list):
+                    val = parsed
+            except Exception:
+                try:
+                    import ast
+                    parsed = ast.literal_eval(val)
+                    if isinstance(parsed, list):
+                        val = parsed
+                except Exception:
+                    val = []
+        else:
+            val = []
+    if not isinstance(val, list):
+        val = []
+    cleaned = []
+    for item in val:
+        if isinstance(item, dict):
+            t = str(item.get("title", "") or "").strip()
+            u = str(item.get("url", "") or "").strip()
+            cleaned.append({"title": t, "url": u})
+    while len(cleaned) < 3:
+        cleaned.append({"title": "", "url": ""})
+    return cleaned[:3]
+
+
 def load_cfg():
     merged = dict(DEFAULTS)
     merged.update(_from_env())                 # .env / environment fills the base
@@ -198,10 +232,14 @@ def load_cfg():
             merged.update(json.loads(p.read_text(encoding="utf-8")))
         except Exception:
             pass
+    if "display_links" in merged:
+        merged["display_links"] = _normalize_display_links(merged["display_links"])
     return merged
 
 
 def save_cfg(cfg):
+    if "display_links" in cfg:
+        cfg["display_links"] = _normalize_display_links(cfg["display_links"])
     Path(CONFIG_PATH).write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 
 
@@ -457,7 +495,7 @@ class ControlPanel(ctk.CTk):
 
         self.cfg = load_cfg()
         self.proc = None
-        self._last_server_url = ""
+        self._last_server_url = self.cfg.get("server_url", "")
         self.log_q = queue.Queue()
         self._running = False
         self.res_pickers = {}   # cfg_key -> {"menu","e_w","e_h"}, filled by _resolution_picker
@@ -1023,7 +1061,9 @@ class ControlPanel(ctk.CTk):
         for child in self.dashboard_links_frame.winfo_children():
             child.destroy()
 
-        links = [l for l in self.cfg.get("display_links", []) if isinstance(l, dict) and l.get("url")]
+        raw_links = self.cfg.get("display_links", [])
+        norm_links = _normalize_display_links(raw_links)
+        links = [l for l in norm_links if l.get("url")]
 
         if not links:
             placeholder = ctk.CTkLabel(
@@ -1452,7 +1492,7 @@ class ControlPanel(ctk.CTk):
         # Display Links (Dashboard Shortcuts — max 3 links)
         dl_card = self._card(s, "🔗", "Display Links", "Add up to 3 quick-access website links shown directly on your Dashboard")
         self.display_link_entries = []
-        saved_links = self.cfg.get("display_links", [])
+        saved_links = _normalize_display_links(self.cfg.get("display_links", []))
         for i in range(3):
             slot_frame = ctk.CTkFrame(dl_card, fg_color=COLORS["bg_alt"], corner_radius=8,
                                       border_width=1, border_color=COLORS["border"])
@@ -1662,7 +1702,7 @@ class ControlPanel(ctk.CTk):
                     u = "https://" + u
                 dlinks.append({"title": t, "url": u})
         else:
-            dlinks = self.cfg.get("display_links", [])
+            dlinks = _normalize_display_links(self.cfg.get("display_links", []))
 
         return {
             "base_url":     self.e_url.get().strip().rstrip("/"),
@@ -1714,11 +1754,11 @@ class ControlPanel(ctk.CTk):
         self._apply_resolution("pin_resolution", cfg.get("pin_resolution", "1000x1500"),
                                default_wh=("1000", "1500"))
         if hasattr(self, "display_link_entries"):
-            links = cfg.get("display_links", [])
+            links = _normalize_display_links(cfg.get("display_links", []))
             for i, (e_title, e_url) in enumerate(self.display_link_entries):
                 e_title.delete(0, "end")
                 e_url.delete(0, "end")
-                if i < len(links) and isinstance(links[i], dict):
+                if i < len(links):
                     if links[i].get("title"):
                         e_title.insert(0, links[i]["title"])
                     if links[i].get("url"):
@@ -1765,6 +1805,8 @@ class ControlPanel(ctk.CTk):
         if cloud_cfg:
             merged = dict(DEFAULTS)
             merged.update(cloud_cfg)
+            if "display_links" in merged:
+                merged["display_links"] = _normalize_display_links(merged["display_links"])
             self.cfg = merged
             save_cfg(merged)
             self.after(0, lambda: self._apply_cfg_to_widgets(merged))
@@ -1783,6 +1825,7 @@ class ControlPanel(ctk.CTk):
         self.cfg = self.collect_cfg()
         save_cfg(self.cfg)
         self._push_cfg_to_cloud()
+        self._render_dashboard_links()
 
     def _flash(self, btn, text, color, revert_text, revert_color, ms=1400):
         btn.configure(text=text, fg_color=color)
@@ -1918,6 +1961,9 @@ class ControlPanel(ctk.CTk):
             self._log("Pipeline start cancelled.\n")
             return
         self._last_server_url = server_url
+        self.cfg["server_url"] = server_url
+        save_cfg(self.cfg)
+        self._push_cfg_to_cloud()
         self._execute_pipeline(server_url=server_url)
 
     def _execute_pipeline(self, server_url=None):

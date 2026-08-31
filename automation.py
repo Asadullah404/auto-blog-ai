@@ -4119,11 +4119,15 @@ def _generate_one_image_myserver(scene: str, dest: Path, width: int, height: int
     if not any(k in clean_prompt.lower() for k in ["photorealistic", "photo", "cinematic", "photography"]):
         clean_prompt = f"{clean_prompt}, photorealistic, cinematic lighting, sharp focus, professional photography, no text, no watermark"
 
+    # Diffusers / SDXL pipelines strictly require width and height to be divisible by 8.
+    sd_width = max(64, int(round(width / 8.0)) * 8)
+    sd_height = max(64, int(round(height / 8.0)) * 8)
+
     payload = {
         "prompt": clean_prompt,
         "negative_prompt": "cartoon, drawing, painting, blurry, deformed hands, bad quality, oversaturated, CGI",
-        "width": width,
-        "height": height,
+        "width": sd_width,
+        "height": sd_height,
         "steps": 25,
         "guidance_scale": 6.0
     }
@@ -4137,7 +4141,7 @@ def _generate_one_image_myserver(scene: str, dest: Path, width: int, height: int
 
     for attempt in range(1, max_retries + 1):
         try:
-            inf(f"  [magenta]My Server[/] generating {label} ({width}×{height}) [attempt {attempt}/{max_retries}] ...")
+            inf(f"  [magenta]My Server[/] generating {label} ({sd_width}×{sd_height}) [attempt {attempt}/{max_retries}] ...")
             r = requests.post(server_url, json=payload, headers=headers, timeout=180)
 
             if r.status_code != 200:

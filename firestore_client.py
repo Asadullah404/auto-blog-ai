@@ -91,10 +91,16 @@ def _encode_value(v):
         return {"doubleValue": v}
     if isinstance(v, datetime):
         return {"timestampValue": v.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")}
+    if isinstance(v, list):
+        return {"arrayValue": {"values": [_encode_value(item) for item in v]}}
+    if isinstance(v, dict):
+        return {"mapValue": {"fields": _encode_fields(v)}}
     return {"stringValue": str(v)}
 
 
 def _decode_value(fv: dict):
+    if not isinstance(fv, dict):
+        return fv
     if "stringValue" in fv:
         return fv["stringValue"]
     if "integerValue" in fv:
@@ -107,6 +113,10 @@ def _decode_value(fv: dict):
         return fv["timestampValue"]
     if "nullValue" in fv:
         return None
+    if "arrayValue" in fv:
+        return [_decode_value(x) for x in fv["arrayValue"].get("values", [])]
+    if "mapValue" in fv:
+        return _decode_fields(fv["mapValue"].get("fields", {}))
     return None
 
 
