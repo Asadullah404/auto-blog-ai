@@ -1,6 +1,9 @@
 # Secrets — never commit real WordPress credentials
 .env
 pipeline_config.json
+offline_bundle.json
+*bundle*.json
+!offline_bundle.example.json
 
 # Firebase — never commit these either
 firebase_config.json

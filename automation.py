@@ -2758,6 +2758,7 @@ print("\n✅ Dependencies ready.\n")
 
 # ── IMPORTS ──────────────────────────────────────────────────
 import json, sqlite3, textwrap, hashlib, re, platform, argparse, threading, queue, urllib.parse
+import bundle_tool
 from io import BytesIO
 
 if platform.system() != "Windows":
@@ -2825,7 +2826,7 @@ CONFIG = {
     "feature_resolution":    "hd",     # feature image — independent of section resolution
     "pin_resolution":        "1000x1500",  # Pinterest pin image — independent of the above
     # ── Text-on-image overlay toggles ───────────────────────
-    "heading_text_overlay":  True,     # paste the section heading onto each section image
+    "heading_text_overlay":  False,    # paste the section heading onto each section image (off by default for clean visuals)
     "feature_text_overlay":  False,    # paste the post title onto the feature image
     # ── Pinterest pin image ─────────────────────────────────
     "pinterest_pin":         False,    # also render + upload a tall Pinterest pin image
@@ -4147,7 +4148,7 @@ def _generate_one_image_myserver(scene: str, dest: Path, width: int, height: int
 
     payload = {
         "prompt": clean_prompt,
-        "negative_prompt": "cartoon, drawing, painting, blurry, deformed hands, bad quality, oversaturated, CGI",
+        "negative_prompt": "cartoon, drawing, painting, blurry, deformed hands, bad quality, oversaturated, CGI, text, watermark, writing, words, letters, font, typography",
         "width": sd_width,
         "height": sd_height,
         "steps": 25,
@@ -4308,18 +4309,11 @@ def _generate_one_image(scene: str, slug: str, dest: Path, label: str,
 
     engine = CONFIG.get("image_engine", "agy_fallback")
 
-    # 1. Custom GPU Server mode (with automatic Pollinations fallback if server is offline or 404)
+    # 1. Custom GPU Server mode (strictly uses My Server — NO fallback)
     if engine == "my_server":
-        try:
-            if _generate_one_image_myserver(scene, dest, w, h, label):
-                db_img_save(db, url, img_key, dest)
-                return True
-        except ImageGenerationError as ige:
-            warn(f"  ⚠ [yellow]My Server unavailable[/] ({ige}) → [bold cyan]seamlessly falling back to Pollinations AI![/]")
-            if _generate_one_image_pollinations(scene, dest, w, h, label):
-                db_img_save(db, url, img_key, dest)
-                return True
-            raise
+        if _generate_one_image_myserver(scene, dest, w, h, label):
+            db_img_save(db, url, img_key, dest)
+            return True
         return False
 
     # 2. Direct Pollinations or Active Fallback mode
@@ -4545,10 +4539,10 @@ def _render_image(bg_path, heading, out_path, out_w, out_h, font_path):
     bh2=max(3,fsize//20); bw=int(out_w*0.10)
     by=max(ty-bh2-int(fsize*0.30),out_h-band_h+my//2)
     draw.rectangle([(mx,by),(mx+bw,by+bh2)],fill=(56,139,253,255))
-    sh2=max(2,fsize//18)
-    for dx,dy in [(-sh2,-sh2),(sh2,-sh2),(-sh2,sh2),(sh2,sh2),(0,sh2*2)]:
-        draw.multiline_text((mx+dx,ty+dy),wrapped,font=font,fill=(0,0,0,175),spacing=ls)
-    draw.multiline_text((mx,ty),wrapped,font=font,fill=(255,255,255,255),spacing=ls)
+    sh2 = max(1, min(3, fsize // 32))
+    for dx, dy in [(-sh2, -sh2), (sh2, -sh2), (-sh2, sh2), (sh2, sh2), (-sh2, 0), (sh2, 0), (0, -sh2), (0, sh2)]:
+        draw.multiline_text((mx+dx, ty+dy), wrapped, font=font, fill=(0, 0, 0, 210), spacing=ls)
+    draw.multiline_text((mx, ty), wrapped, font=font, fill=(255, 255, 255, 255), spacing=ls)
     _save_image(Image.alpha_composite(canvas,tl).convert("RGB"), out_path)
     return dict(src=f"{meta['w']}×{meta['h']}",out=f"{out_w}×{out_h}",
                 dpi=meta["dpi"].upper(),fs=fsize,ln=wrapped.count("\n")+1)
@@ -4862,6 +4856,14 @@ def main():
     parser.add_argument("--pinterest-pin", action="store_true",
                         help="Also render (and, on publish, upload) a tall Pinterest pin "
                              "image with the post title on it")
+    parser.add_argument("--mode", choices=["online", "offline"], default=None,
+                        help="Execution mode: 'online' (Firebase) or 'offline' (Bundle file)")
+    parser.add_argument("--bundle", default=None,
+                        help="Path to offline bundle JSON or CSV file")
+    parser.add_argument("--offline", action="store_true",
+                        help="Run offline using an all-in-one bundle file (no Firebase)")
+    parser.add_argument("--online", action="store_true",
+                        help="Run online using Firebase Firestore sync")
     args = parser.parse_args()
 
     # Load any saved pipeline_config.json overrides
@@ -4871,8 +4873,16 @@ def main():
             stored_cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
             if "image_engine" in stored_cfg:
                 CONFIG["image_engine"] = stored_cfg["image_engine"]
+            if "server_url" in stored_cfg:
+                CONFIG["server_url"] = stored_cfg["server_url"]
             if "pollinations_delay" in stored_cfg:
                 CONFIG["pollinations_delay"] = int(stored_cfg["pollinations_delay"])
+            if "heading_text_overlay" in stored_cfg:
+                CONFIG["heading_text_overlay"] = bool(stored_cfg["heading_text_overlay"])
+            if "feature_text_overlay" in stored_cfg:
+                CONFIG["feature_text_overlay"] = bool(stored_cfg["feature_text_overlay"])
+            if "pinterest_pin" in stored_cfg:
+                CONFIG["pinterest_pin"] = bool(stored_cfg["pinterest_pin"])
         except Exception:
             pass
 
@@ -4885,9 +4895,12 @@ def main():
 
     _apply_image_settings(args.image_format, args.resolution,
                            args.feature_resolution, args.pin_resolution)
-    CONFIG["feature_text_overlay"] = args.feature_text
-    CONFIG["heading_text_overlay"] = not args.no_heading_text
-    CONFIG["pinterest_pin"]        = args.pinterest_pin
+    if args.feature_text:
+        CONFIG["feature_text_overlay"] = True
+    if args.no_heading_text:
+        CONFIG["heading_text_overlay"] = False
+    if args.pinterest_pin:
+        CONFIG["pinterest_pin"] = True
 
     console.print()
     console.print(Panel.fit(
@@ -4918,29 +4931,115 @@ def main():
     seo_skill = ensure_seo_skill(CONFIG["skills_dir"])
     console.print()
 
-    # ── Sign-in check ─────────────────────────────────────────
-    # automation.py never runs its own interactive sign-in (that's the GUI's
-    # sign-in screen) — it just reads whatever session the GUI already
-    # cached to firebase_session.json, refreshing it as needed.
-    id_token, uid = firebase_auth.get_valid_id_token()
-    if not id_token:
-        err("Not signed in — open Content Pipeline and sign in first.")
-        sys.exit(1)
+    # ── Interactive Mode Choice (Online vs Offline) ───────────
+    mode = None
+    if args.offline or (args.mode == "offline") or args.bundle:
+        mode = "offline"
+    elif args.online or (args.mode == "online"):
+        mode = "online"
+    else:
+        console.print()
+        console.print(Panel(
+            "[bold white]SELECT PIPELINE OPERATION MODE[/]\n\n"
+            "  [bold cyan][1] 🌐 Online Mode[/]  — Firebase / Firestore cloud sync (multi-PC)\n"
+            "  [bold green][2] 💻 Offline Mode[/] — All-in-one Bundle file (Zero Cloud Quotas, 24/7)\n",
+            border_style="cyan", padding=(0, 2)
+        ))
+        choice = Prompt.ask("Choose mode [1=Online, 2=Offline]", choices=["1", "2"], default="2")
+        mode = "online" if choice == "1" else "offline"
 
-    if args.import_csv:
-        csv_path = Path(args.import_csv)
-        if not csv_path.exists():
-            err(f"CSV file not found: {csv_path}")
+    offline_bundle_path = None
+    bundle_data = None
+    if mode == "offline":
+        bundle_file = args.bundle
+        if not bundle_file:
+            def_path = "offline_bundle.json" if Path("offline_bundle.json").exists() else ("Links.csv" if Path("Links.csv").exists() else "offline_bundle.json")
+            bundle_file = Prompt.ask("Enter path to your Offline Bundle file (.json) or CSV", default=def_path)
+
+        bundle_path = Path(bundle_file)
+        if not bundle_path.exists():
+            warn(f"File not found: {bundle_path}")
+            create_now = Prompt.ask("Create an offline bundle now from pipeline_config.json + Links.csv?", choices=["y", "n"], default="y")
+            if create_now.lower() == "y":
+                cfg = {}
+                if Path("pipeline_config.json").exists():
+                    try:
+                        cfg = json.loads(Path("pipeline_config.json").read_text(encoding="utf-8"))
+                    except Exception: pass
+                links = bundle_tool.load_csv_links(Path("Links.csv"))
+                bundle_tool.create_bundle(cfg, links, Path("offline_bundle.json"))
+                bundle_path = Path("offline_bundle.json")
+                ok(f"Created {bundle_path} with {len(links)} links!")
+            else:
+                err("No bundle file provided. Exiting.")
+                sys.exit(1)
+
+        offline_bundle_path = bundle_path
+        if bundle_path.suffix.lower() == ".json":
+            try:
+                bundle_data = bundle_tool.load_bundle(bundle_path)
+                b_settings = bundle_data.get("settings", {})
+                for k in ("image_engine", "server_url", "pollinations_delay",
+                          "heading_text_overlay", "feature_text_overlay", "pinterest_pin"):
+                    if k in b_settings:
+                        CONFIG[k] = b_settings[k]
+                if "image_format" in b_settings or "image_resolution" in b_settings:
+                    _apply_image_settings(
+                        b_settings.get("image_format", CONFIG["image_format"]),
+                        b_settings.get("image_resolution", CONFIG["resolution"]),
+                        b_settings.get("feature_resolution", CONFIG["feature_resolution"]),
+                        b_settings.get("pin_resolution", CONFIG["pin_resolution"])
+                    )
+                os.environ["PIPELINE_CONFIG"] = str(bundle_path.resolve())
+                ok(f"Loaded all settings and credentials from bundle: [cyan]{bundle_path.name}[/]")
+            except Exception as be:
+                warn(f"Bundle load notice: {be}. Treating as raw links file.")
+                bundle_data = None
+
+    id_token, uid = None, None
+    if mode == "online":
+        id_token, uid = firebase_auth.get_valid_id_token()
+        if not id_token:
+            err("Not signed in — open Content Pipeline and sign in first.")
             sys.exit(1)
-        inf(f"Importing [cyan]{csv_path}[/] into Firestore ...")
-        counts = firestore_import_csv(uid, id_token, csv_path)
-        ok(f"Import complete — [green]{counts['created']}[/] new, "
-           f"[cyan]{counts['updated']}[/] updated.")
-        return
 
-    all_links = fs.run_query(uid, id_token)
-    total_urls = len(all_links)
-    ok(f"[cyan]{total_urls}[/] URLs loaded from Firestore for this account")
+        if args.import_csv:
+            csv_path = Path(args.import_csv)
+            if not csv_path.exists():
+                err(f"CSV file not found: {csv_path}")
+                sys.exit(1)
+            inf(f"Importing [cyan]{csv_path}[/] into Firestore ...")
+            counts = firestore_import_csv(uid, id_token, csv_path)
+            ok(f"Import complete — [green]{counts['created']}[/] new, "
+               f"[cyan]{counts['updated']}[/] updated.")
+            return
+
+    all_links = []
+    if mode == "offline":
+        if bundle_data and "links" in bundle_data:
+            all_links = bundle_data["links"]
+        else:
+            all_links = bundle_tool.load_csv_links(offline_bundle_path)
+        total_urls = len(all_links)
+        ok(f"[cyan]{total_urls}[/] URLs loaded from offline bundle [cyan]{offline_bundle_path.name}[/]")
+    else:
+        try:
+            all_links = fs.run_query(uid, id_token)
+            total_urls = len(all_links)
+            ok(f"[cyan]{total_urls}[/] URLs loaded from Firestore for this account")
+        except Exception as e:
+            warn(f"Firestore notice: {e}")
+            warn("⚠ Firestore is currently at daily quota or unavailable.")
+            switch_off = Prompt.ask("Switch to Offline Bundle mode now?", choices=["y", "n"], default="y")
+            if switch_off.lower() == "y":
+                mode = "offline"
+                offline_bundle_path = Path("offline_bundle.json") if Path("offline_bundle.json").exists() else Path("Links.csv")
+                all_links = bundle_tool.load_csv_links(offline_bundle_path)
+                total_urls = len(all_links)
+                ok(f"Switched to offline mode: {total_urls} URLs loaded from {offline_bundle_path.name}")
+            else:
+                sys.exit(1)
+
     console.print()
 
     batch_start = time.time()
@@ -4949,42 +5048,85 @@ def main():
 
     try:
         while True:
-            # Ensure fresh valid ID token for long-running runs
-            fresh_tok, fresh_u = firebase_auth.get_valid_id_token()
-            if fresh_tok:
-                id_token, uid = fresh_tok, fresh_u
+            url = ""
+            category = ""
+            row = {}
 
-            pending = fs_pending(uid, id_token, CONFIG["csv_pending_stale_hours"])
+            if mode == "offline":
+                current_links = []
+                if bundle_data and offline_bundle_path.suffix.lower() == ".json":
+                    bundle_data = bundle_tool.load_bundle(offline_bundle_path)
+                    current_links = bundle_data.get("links", [])
+                else:
+                    current_links = bundle_tool.load_csv_links(offline_bundle_path)
 
-            if not pending:
-                console.print()
-                ok("[bold green]All URLs are marked done! Pipeline complete.[/]")
-                break
+                pending_rows = [r for r in current_links if r.get("status") not in ("done", "failed")]
+                if not pending_rows:
+                    console.print()
+                    ok("[bold green]All URLs in offline bundle are marked done! Pipeline complete.[/]")
+                    break
+                row = pending_rows[0]
+                url = row["url"]
+                category = row.get("category", "")
+                inf(f"[cyan]{len(pending_rows)}[/] URLs remaining in offline bundle out of [cyan]{total_urls}[/]")
+            else:
+                fresh_tok, fresh_u = firebase_auth.get_valid_id_token()
+                if fresh_tok:
+                    id_token, uid = fresh_tok, fresh_u
 
-            inf(f"[cyan]{len(pending)}[/] URLs remaining out of [cyan]{total_urls}[/]")
+                pending = []
+                try:
+                    pending = fs_pending(uid, id_token, CONFIG["csv_pending_stale_hours"])
+                except Exception as e:
+                    warn(f"Firestore query error: {e} → switching to offline bundle!")
+                    mode = "offline"
+                    offline_bundle_path = Path("offline_bundle.json") if Path("offline_bundle.json").exists() else Path("Links.csv")
+                    continue
+
+                if not pending:
+                    console.print()
+                    ok("[bold green]All URLs are marked done! Pipeline complete.[/]")
+                    break
+
+                inf(f"[cyan]{len(pending)}[/] URLs remaining out of [cyan]{total_urls}[/]")
+                row      = pending[0]
+                url      = row["url"]
+                category = row.get("category", "")
+                fs_claim(uid, id_token, url)
+
             console.print()
-
-            row      = pending[0]   # process next pending row
-            url      = row["url"]
-            category = row.get("category", "")
             if category:
                 inf(f"Category → [cyan]{category}[/]")
-
-            # Claim it immediately — announces "I'm working this" to any
-            # other machine signed into the same account, before any real
-            # work starts (one Firestore write, no whole-file re-upload)
-            fs_claim(uid, id_token, url)
 
             result = run_one_url(url, seo_skill, fresh=args.fresh, category=category)
 
             if result == "done":
-                fs_mark_done(uid, id_token, url)
+                if mode == "offline":
+                    if offline_bundle_path.suffix.lower() == ".json":
+                        bundle_tool.update_bundle_link(offline_bundle_path, url, "done")
+                    else:
+                        c_links = bundle_tool.load_csv_links(offline_bundle_path)
+                        for it in c_links:
+                            if it["url"] == url: it["status"] = "done"
+                        bundle_tool.save_csv_links(offline_bundle_path, c_links)
+                    ok(f"[dim]Bundle updated → [cyan]{url}[/] marked [green]done[/]")
+                else:
+                    fs_mark_done(uid, id_token, url)
                 done_count += 1
 
             elif result == "failed":
-                # 3 consecutive crashes — mark failed so we skip and move on
-                fs_mark_failed(uid, id_token, url)
-                warn(f"Marked as [red]failed[/]: {url}")
+                if mode == "offline":
+                    if offline_bundle_path.suffix.lower() == ".json":
+                        bundle_tool.update_bundle_link(offline_bundle_path, url, "failed")
+                    else:
+                        c_links = bundle_tool.load_csv_links(offline_bundle_path)
+                        for it in c_links:
+                            if it["url"] == url: it["status"] = "failed"
+                        bundle_tool.save_csv_links(offline_bundle_path, c_links)
+                    warn(f"Marked as [red]failed[/] in bundle: {url}")
+                else:
+                    fs_mark_failed(uid, id_token, url)
+                    warn(f"Marked as [red]failed[/]: {url}")
                 fail_count += 1
 
             # result == "retry" → URL stays pending; next loop iteration picks it up

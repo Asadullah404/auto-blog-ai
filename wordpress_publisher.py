@@ -182,6 +182,8 @@ def _load_config():
         return
     try:
         cfg = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(cfg, dict) and "settings" in cfg and isinstance(cfg["settings"], dict):
+            cfg = cfg["settings"]
     except Exception as e:
         warn(f"Could not read {path}: {e}")
         return

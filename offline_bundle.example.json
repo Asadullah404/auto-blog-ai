@@ -1,0 +1,35 @@
+{
+  "bundle_version": "1.0",
+  "name": "Sample Offline Pipeline Bundle",
+  "settings": {
+    "base_url": "https://your-wordpress-site.com",
+    "username": "your-wp-username",
+    "app_password": "xxxx xxxx xxxx xxxx xxxx xxxx",
+    "status": "publish",
+    "auto_publish": true,
+    "seo_plugin": "rankmath",
+    "alt_from": "heading",
+    "image_engine": "my_server",
+    "server_url": "https://your-ngrok-or-colab-tunnel.ngrok-free.dev/generate",
+    "pollinations_delay": 40,
+    "image_format": "webp",
+    "image_resolution": "1000x1500",
+    "feature_resolution": "hd",
+    "pin_resolution": "1000x1500",
+    "heading_text_overlay": false,
+    "feature_text_overlay": false,
+    "pinterest_pin": false
+  },
+  "links": [
+    {
+      "url": "https://example.com/article-1",
+      "category": "Tech",
+      "status": "pending"
+    },
+    {
+      "url": "https://example.com/article-2",
+      "category": "Design",
+      "status": "pending"
+    }
+  ]
+}

@@ -145,11 +145,15 @@ def build_app():
     _pyinstaller(ROOT / "pipeline_gui.py", "ContentPipeline", windowed=True, distpath=APP_DIR,
                 extra=["--collect-all", "customtkinter"])
 
+    # 4) bundle_tool.exe — standalone offline bundle creator & manager
+    _pyinstaller(ROOT / "bundle_tool.py", "bundle_tool",
+                windowed=False, distpath=APP_DIR)
+
     # Support files the running app expects to find next to it. firebase_config.json
     # (public web config — see firebase_config.example.json for why this isn't
     # a secret) must ship with every install so end users can sign in.
     for name in ("Skills", "rank-math-rest-meta.php", "README_SETUP.md",
-                "firebase_config.json"):
+                "firebase_config.json", "offline_bundle.example.json"):
         src = ROOT / name
         if not src.exists():
             if name == "firebase_config.json":

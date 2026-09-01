@@ -33,6 +33,7 @@ import webbrowser
 import subprocess
 import threading
 import importlib
+import bundle_tool
 from pathlib import Path
 
 # Ensure UTF-8 stdout/stderr streams on Windows
@@ -94,7 +95,7 @@ DEFAULTS = {
     "image_resolution":     "hd",      # heading/section images
     "feature_resolution":   "hd",      # feature image — independent of the above
     "pin_resolution":       "1000x1500",  # Pinterest pin image
-    "heading_text_overlay": True,      # paste each section heading onto its image
+    "heading_text_overlay": False,     # paste each section heading onto its image
     "feature_text_overlay": False,     # paste the post title onto the feature image
     "pinterest_pin":        False,     # also render + upload a Pinterest pin image
     "display_links": [
@@ -550,6 +551,10 @@ class ControlPanel(ctk.CTk):
         self.uid      = None
         self._pending_cfg_push = None  # settings saved before sign-in finished; flushed by _set_auth
         self._fs_backoff_until = 0.0   # epoch time; polling pauses until past this (see _enter_fs_backoff)
+        self._last_fs_stats_time = 0.0
+        self._last_links_fetch_time = 0.0
+        self.run_mode = "offline"
+        self.offline_bundle_path = "offline_bundle.json"
 
         self.grid_columnconfigure(0, weight=0)
         self.grid_columnconfigure(1, weight=1)
@@ -637,11 +642,25 @@ class ControlPanel(ctk.CTk):
                                         command=self.on_create_account)
         self.signup_btn.pack(side="left", padx=(6, 0))
 
+        self.offline_btn = ctk.CTkButton(card, text="💻  Continue Offline (Bundle Mode)",
+                                         height=36, width=274,
+                                         fg_color="transparent", border_width=1,
+                                         border_color=COLORS["border"],
+                                         hover_color=COLORS["card_alt"],
+                                         font=ctk.CTkFont(size=12),
+                                         command=self.on_continue_offline)
+        self.offline_btn.pack(pady=(4, 0))
+
         self.signin_status = ctk.CTkLabel(card, text="", font=ctk.CTkFont(size=11),
                                           text_color=COLORS["amber"], wraplength=300, justify="center")
-        self.signin_status.pack(pady=(4, 30), padx=20)
+        self.signin_status.pack(pady=(4, 20), padx=20)
 
         self.signin_overlay = ov
+
+    def on_continue_offline(self):
+        self.signin_overlay.grid_remove()
+        self.run_mode = "offline"
+        self._log("💻 Running in Offline Mode (using offline bundle, zero cloud quotas).\n")
 
     def _signin_inputs(self):
         email = self.e_signin_email.get().strip()
@@ -892,7 +911,8 @@ class ControlPanel(ctk.CTk):
         if name == "Articles":
             self._populate_articles(self.e_search.get() if hasattr(self, "e_search") else "")
         elif name == "Sync":
-            self._refresh_links_table(force=True)
+            if time.time() - getattr(self, "_last_links_fetch_time", 0) >= 60.0 or not self._links_cache:
+                self._refresh_links_table(force=True)
 
     # ── shared card helper ───────────────────────────────────
     def _card(self, parent, icon, title, subtitle=None):
@@ -1176,7 +1196,11 @@ class ControlPanel(ctk.CTk):
         return time.time() < getattr(self, "_fs_backoff_until", 0)
 
     def _refresh_dashboard(self):
-        if self.id_token and self.uid and not self._fs_backing_off():
+        now = time.time()
+        # Query Firestore stats at most once every 60 seconds to conserve free-tier reads
+        if (self.id_token and self.uid and not self._fs_backing_off()
+                and (now - getattr(self, "_last_fs_stats_time", 0) >= 60.0)):
+            self._last_fs_stats_time = now
             threading.Thread(target=self._dashboard_stats_worker,
                              args=(self.uid, self.id_token), daemon=True).start()
 
@@ -1190,7 +1214,7 @@ class ControlPanel(ctk.CTk):
         else:
             self.thumb_label.configure(image=None, text="No images generated yet")
 
-        self.after(20000, self._refresh_dashboard)
+        self.after(30000, self._refresh_dashboard)
 
     def _dashboard_stats_worker(self, uid, id_token):
         try:
@@ -1227,8 +1251,12 @@ class ControlPanel(ctk.CTk):
                     font=ctk.CTkFont(size=11), text_color=COLORS["text_mute"],
                     wraplength=820, justify="left").pack(anchor="w", pady=(2, 0))
         body = ctk.CTkFrame(top, fg_color="transparent"); body.pack(fill="x", padx=18, pady=(4, 18))
-        ctk.CTkButton(body, text="Choose CSV…", height=36, width=140, fg_color=COLORS["accent"],
+        ctk.CTkButton(body, text="Choose CSV…", height=36, width=120, fg_color=COLORS["accent"],
                      hover_color=COLORS["accent_hover"], command=self.on_upload_csv).pack(side="left")
+        ctk.CTkButton(body, text="📦 Create Bundle", height=36, width=140, fg_color=COLORS["slate"],
+                     hover_color=COLORS["slate_hover"], command=self.on_create_offline_bundle).pack(side="left", padx=(8, 0))
+        ctk.CTkButton(body, text="📂 Load Bundle", height=36, width=120, fg_color=COLORS["card_alt"],
+                     hover_color=COLORS["border"], command=self.on_load_offline_bundle).pack(side="left", padx=(8, 0))
         self.sync_status_lbl = ctk.CTkLabel(body, text="", text_color=COLORS["text_mute"])
         self.sync_status_lbl.pack(side="left", padx=(12, 0))
         self.sync_signin_btn = ctk.CTkButton(body, text="Sign in", height=28, width=80,
@@ -1307,16 +1335,74 @@ class ControlPanel(ctk.CTk):
         self.after(0, lambda: self.sync_status_lbl.configure(text=summary, text_color=color))
         self.after(0, lambda: self._refresh_links_table(force=True))
 
+    def on_create_offline_bundle(self):
+        csv_path = filedialog.askopenfilename(
+            title="Select Links CSV for Bundle",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            initialfile="Links.csv"
+        )
+        if not csv_path:
+            csv_path = "Links.csv"
+        out_path = filedialog.asksaveasfilename(
+            title="Save Offline Bundle",
+            defaultextension=".json",
+            initialfile="offline_bundle.json",
+            filetypes=[("JSON Bundle", "*.json")]
+        )
+        if not out_path:
+            return
+        links = bundle_tool.load_csv_links(Path(csv_path))
+        bundle_tool.create_bundle(self.cfg, links, Path(out_path))
+        self._log(f"📦 Created offline bundle: {out_path} ({len(links)} links).\n")
+        self.offline_bundle_path = out_path
+        self.run_mode = "offline"
+        self._links_cache = links
+        self.after(0, self._render_links_table)
+
+    def on_load_offline_bundle(self):
+        path = filedialog.askopenfilename(
+            title="Select Offline Bundle (.json) or CSV",
+            filetypes=[("Bundle files", "*.json"), ("CSV files", "*.csv"), ("All files", "*.*")]
+        )
+        if not path:
+            return
+        p = Path(path)
+        if p.suffix.lower() == ".json":
+            try:
+                data = bundle_tool.load_bundle(p)
+                self._links_cache = data.get("links", [])
+                self.offline_bundle_path = str(p)
+                self.run_mode = "offline"
+                self._log(f"📦 Loaded offline bundle: {p.name} ({len(self._links_cache)} links).\n")
+            except Exception as e:
+                self._log(f"⚠ Could not read bundle: {e}\n")
+                return
+        else:
+            links = bundle_tool.load_csv_links(p)
+            self._links_cache = links
+            self.offline_bundle_path = str(p)
+            self.run_mode = "offline"
+            self._log(f"📄 Loaded CSV links: {p.name} ({len(links)} links).\n")
+        self.after(0, self._render_links_table)
+
     def _sync_poll_tick(self):
+        # Poll Firestore links only every 5 minutes (300s) if user stays on Sync tab,
+        # preventing the aggressive 25s loop that was burning 72,000 reads/hour.
         if self._current_page == "Sync" and self.id_token and self.uid and not self._fs_backing_off():
-            self._refresh_links_table()
-        self.after(25000, self._sync_poll_tick)
+            now = time.time()
+            if now - getattr(self, "_last_links_fetch_time", 0) >= 300.0:
+                self._refresh_links_table()
+        self.after(60000, self._sync_poll_tick)
 
     def _refresh_links_table(self, force=False):
         if not (self.id_token and self.uid):
             return
         if self._fs_backing_off() and not force:
             return
+        now = time.time()
+        if not force and (now - getattr(self, "_last_links_fetch_time", 0) < 60.0):
+            return
+        self._last_links_fetch_time = now
         threading.Thread(target=self._links_worker, args=(self.uid, self.id_token), daemon=True).start()
 
     def _links_worker(self, uid, id_token):
@@ -1984,7 +2070,7 @@ class ControlPanel(ctk.CTk):
         self._run(cmd, tag="connection test", target_dir=run_dir)
 
     def on_start(self):
-        if not (self.id_token and self.uid):
+        if getattr(self, "run_mode", "offline") == "online" and not (self.id_token and self.uid):
             self._log("⏳ Connecting to your account…\n")
             self._await_auth(self.on_start, on_timeout=self._start_signin_timeout)
             return
@@ -2030,6 +2116,13 @@ class ControlPanel(ctk.CTk):
             args.append("--no-heading-text")
         if self.pinterest_var.get():
             args.append("--pinterest-pin")
+
+        if getattr(self, "run_mode", "offline") == "offline":
+            b_path = getattr(self, "offline_bundle_path", "offline_bundle.json")
+            args.extend(["--offline", "--bundle", str(b_path)])
+        else:
+            args.append("--online")
+
         cmd, run_dir = self._tool_cmd("automation", args)
         if not cmd:
             self._log("✗ automation not found (script or .exe).\n"); return
