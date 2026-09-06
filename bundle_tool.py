@@ -116,6 +116,11 @@ def inspect_bundle(bundle_path: Path):
     print(f"  Server URL:       {settings.get('server_url', 'None')}")
     print(f"  Resolutions:      Heading: {settings.get('image_resolution', 'hd')} | Feature: {settings.get('feature_resolution', 'hd')}")
     print(f"  Text Overlays:    Heading: {settings.get('heading_text_overlay', False)} | Feature: {settings.get('feature_text_overlay', False)}")
+    print(f"  Article Format:   {settings.get('article_format', 'paragraphs')}")
+    if settings.get("feature_image_master_prompt"):
+        print(f"  Feature Master:   {settings.get('feature_image_master_prompt')}")
+    if settings.get("heading_image_master_prompt"):
+        print(f"  Heading Master:   {settings.get('heading_image_master_prompt')}")
     print("-" * 65)
     print("📊 URL Statistics:")
     print(f"  Total URLs:       {total}")

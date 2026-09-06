@@ -2830,6 +2830,11 @@ CONFIG = {
     "feature_text_overlay":  False,    # paste the post title onto the feature image
     # ── Pinterest pin image ─────────────────────────────────
     "pinterest_pin":         False,    # also render + upload a tall Pinterest pin image
+    # ── Master prompts for AI image generation ──────────────
+    "feature_image_master_prompt": "", # style / lighting addition for feature image
+    "heading_image_master_prompt": "", # style / lighting addition for section images
+    # ── Article format structure ────────────────────────────
+    "article_format":        "paragraphs", # "paragraphs" | "point_wise" | "subheadings" | "hybrid"
     # ── Firestore link state (multi-PC shared link-list, per signed-in account) ──
     # firebase_config.json / firebase_session.json filenames are owned by
     # firebase_auth.py, not repeated here.
@@ -2971,10 +2976,18 @@ main{max-width:960px;margin:0 auto;padding:64px 24px 100px}
 .img-wrap img{display:block;width:100%;height:auto}
 .sec-body p{font-size:1.04rem;color:#333;margin-bottom:14px;max-width:740px}
 .sec-body p:last-child{margin-bottom:0}
+.sec-body h3{font-family:'Playfair Display',Georgia,serif;font-size:1.22rem;color:#1e293b;margin:24px 0 10px;line-height:1.35}
+.sec-body ul.article-list,.sec-body ol.article-list{margin:14px 0 18px 24px;padding-left:8px}
+.sec-body ul.article-list li,.sec-body ol.article-list li{margin-bottom:9px;font-size:1.02rem;color:#333;line-height:1.7}
+.sec-body strong{color:#0f172a;font-weight:600}
 .conclusion{background:linear-gradient(135deg,#1e3a5f 0%,#2563eb 100%);border-radius:16px;padding:48px 44px;margin-top:80px;margin-bottom:40px;color:#fff}
 .conclusion h2{font-family:'Playfair Display',Georgia,serif;font-size:clamp(1.4rem,2.8vw,2rem);margin-bottom:20px;color:#fff}
 .conclusion p{font-size:1.05rem;line-height:1.8;margin-bottom:14px;color:rgba(255,255,255,.90)}
 .conclusion p:last-child{margin-bottom:0}
+.conclusion h3{font-size:1.18rem;color:#fff;margin:22px 0 10px}
+.conclusion ul.article-list{margin:12px 0 16px 24px}
+.conclusion ul.article-list li{margin-bottom:8px;font-size:1.02rem;color:rgba(255,255,255,.95);line-height:1.7}
+.conclusion strong{color:#fff;font-weight:600}
 .conclusion-tag{display:inline-block;margin-top:24px;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:rgba(255,255,255,.55);font-weight:600}
 .div{display:flex;align-items:center;gap:16px;margin:64px 0}
 .div-line{flex:1;height:1px;background:var(--rule)}
@@ -3002,7 +3015,7 @@ footer{text-align:center;padding:40px;font-size:12px;color:#aaa;border-top:1px s
     {% if s.img %}<div class="img-wrap"><img src="{{ s.img }}" alt="{{ s.heading }}" loading="lazy"></div>{% endif %}
     <h2>{{ s.heading }}</h2>
     <div class="sec-body">
-      {% for para in s.paragraphs %}<p>{{ para }}</p>{% endfor %}
+      {% if s.rendered_html %}{{ s.rendered_html | safe }}{% else %}{% for para in s.paragraphs %}<p>{{ para }}</p>{% endfor %}{% endif %}
     </div>
   </div>
   {% if not loop.last %}<div class="div"><div class="div-line"></div><div class="div-dot"></div><div class="div-line"></div></div>{% endif %}
@@ -3011,7 +3024,7 @@ footer{text-align:center;padding:40px;font-size:12px;color:#aaa;border-top:1px s
   <div class="div"><div class="div-line"></div><div class="div-dot"></div><div class="div-line"></div></div>
   <div class="conclusion">
     <h2>{{ data.conclusion.heading }}</h2>
-    {% for para in data.conclusion.paragraphs %}<p>{{ para }}</p>{% endfor %}
+    {% if data.conclusion.rendered_html %}{{ data.conclusion.rendered_html | safe }}{% else %}{% for para in data.conclusion.paragraphs %}<p>{{ para }}</p>{% endfor %}{% endif %}
     <span class="conclusion-tag">End of Article</span>
   </div>
   {% endif %}
@@ -3758,6 +3771,49 @@ def _rewrite_conclusion(title, seo_skill, extra=""):
         ],
     }
 
+# ── ARTICLE FORMAT & PROMPT GENERATION ────────────────────────
+def _get_format_instructions(fmt: str = None) -> tuple:
+    """Returns (rules_text, example_json_fragment, label) for the chosen article format."""
+    fmt = (fmt or CONFIG.get("article_format", "paragraphs")).lower()
+    if fmt == "point_wise":
+        rules = (
+            "- FORMAT REQUIREMENT: POINT-WISE / BULLET POINTS:\n"
+            "  * First item in 'paragraphs' MUST be 1 introductory context paragraph (40-60 words).\n"
+            "  * Followed by 3 to 6 distinct point-wise strings, each starting with: '- **Key Concept**: detailed actionable explanation'.\n"
+            "  * Conclude with 1 summary sentence string providing a takeaway or next step."
+        )
+        example = '["Introductory context for this section.", "- **First Point**: Detailed explanation of first key aspect.", "- **Second Point**: Practical insight or guideline.", "- **Third Point**: Critical factor to keep in mind.", "Closing takeaway sentence."]'
+        label = "Point-Wise / Bullet Points"
+    elif fmt == "subheadings":
+        rules = (
+            "- FORMAT REQUIREMENT: SUB-HEADING WISE (H2 + H3):\n"
+            "  * First item in 'paragraphs' MUST be 1 overview paragraph under the main H2.\n"
+            "  * Followed by 2 to 3 distinct subsections. Each subsection MUST begin with a string '### Subheading Title' (H3) followed immediately by 1-2 focused explanatory paragraphs."
+        )
+        example = '["Overview of this section.", "### First Subheading Title", "In-depth explanation focusing on this specific sub-topic.", "### Second Subheading Title", "Detailed explanation for the second sub-topic."]'
+        label = "Sub-Heading Wise (H2 + H3)"
+    elif fmt == "hybrid":
+        rules = (
+            "- FORMAT REQUIREMENT: HYBRID (PARAGRAPHS + BULLET POINTS):\n"
+            "  * Each section 'paragraphs' MUST contain 1 to 2 rich explanatory narrative paragraphs.\n"
+            "  * Followed by 3 to 5 bullet point strings starting with '- **Key Takeaway**: ' highlighting essential facts, tips, or takeaways."
+        )
+        example = '["In-depth explanatory paragraph detailing the background and importance...", "- **Key Takeaway 1**: Actionable summary of the primary fact.", "- **Key Takeaway 2**: Practical application or pro tip.", "- **Key Takeaway 3**: Common pitfall or expert recommendation."]'
+        label = "Hybrid (Paragraphs + Bullet Points)"
+    else:  # "paragraphs"
+        rules = "- Each section 'paragraphs' must have 2-4 comprehensive narrative paragraphs (80-120 words each)."
+        example = '["Paragraph 1 text exploring the concept...", "Paragraph 2 text providing further details and facts..."]'
+        label = "Standard Paragraphs"
+    return rules, example, label
+
+def _get_image_style_guidance() -> tuple:
+    """Returns style prompt hints for feature and heading images if configured."""
+    feat_master = CONFIG.get("feature_image_master_prompt", "").strip()
+    head_master = CONFIG.get("heading_image_master_prompt", "").strip()
+    feat_hint = f"hero scene 50 words, style requirement: {feat_master}" if feat_master else "hero scene 50 words"
+    head_hint = f"scene, style requirement: {head_master}" if head_master else "scene"
+    return feat_hint, head_hint
+
 AGY_REWRITE_PROMPT = """\
 {seo_skill}
 ---
@@ -3776,7 +3832,7 @@ RULES:
   single quotes ' ' instead — for example the 'best' option, not the "best" option.
 - Do NOT use literal linebreaks inside JSON strings.
 - Return exactly {n_sections} section objects in "sections".
-- Each section "paragraphs" must have 2-4 paragraphs (80-120 words each).
+{format_rules}
 - Include a "conclusion" object.
 
 JSON schema:
@@ -3786,9 +3842,9 @@ JSON schema:
   "keywords": "kw1, kw2, kw3, kw4, kw5",
   "category": "Category",
   "intro": "article opener",
-  "feature_image_prompt": "hero scene 50 words",
+  "feature_image_prompt": "{feature_img_hint}",
   "sections": [
-    {{"heading":"H2","paragraphs":["p1","p2"],"image_prompt":"scene","image_alt":"alt","snippet":"answer"}}
+    {{"heading":"H2","paragraphs":{paragraphs_example},"image_prompt":"{sec_img_hint}","image_alt":"alt","snippet":"answer"}}
   ],
   "conclusion": {{"heading":"Wrap-up H2","paragraphs":["para1","para2"]}}
 }}
@@ -3806,6 +3862,7 @@ RULES:
 - NEVER use a double-quote character " inside any string value — use single
   quotes ' ' if you need to quote or emphasize a word or phrase.
 - Do NOT use literal linebreaks inside JSON strings.
+{format_rules}
 
 Sections:
 {block}
@@ -3821,13 +3878,17 @@ def _build_sections_block(sections):
     return "\n".join(lines)
 
 def _rewrite_single_section(s, title, seo_skill):
+    format_rules, paragraphs_example, _ = _get_format_instructions(CONFIG.get("article_format", "paragraphs"))
+    _, head_hint = _get_image_style_guidance()
     prompt = (f"{seo_skill}\n---\nRewrite this section from \"{title}\" for SEO.\n"
               f"HEADING: {s['heading']}\nBODY: {s.get('body','')[:1500]}\n\n"
+              f"RULES:\n"
+              f"{format_rules}\n"
               f"Return ONLY valid JSON. NEVER use a double-quote character \" "
               f"inside a string value — use single quotes ' ' instead:\n"
               f"{{\"heading\":\"{s['heading']}\","
-              f"\"paragraphs\":[\"Para 1\",\"Para 2\"],"
-              f"\"image_prompt\":\"scene\",\"image_alt\":\"alt\",\"snippet\":\"answer\"}}")
+              f"\"paragraphs\":{paragraphs_example},"
+              f"\"image_prompt\":\"{head_hint}\",\"image_alt\":\"alt\",\"snippet\":\"answer\"}}")
     try:
         raw = _run_agy(prompt, CONFIG["agy_timeout"])
         parsed = _parse_json(raw)
@@ -3857,6 +3918,14 @@ def phase_transform(extracted, url, db, seo_skill, category_override: str = ""):
     title    = extracted["title"]
     sections = extracted["sections"]   # ALL sections — no cap
 
+    format_rules, paragraphs_example, format_label = _get_format_instructions(CONFIG.get("article_format", "paragraphs"))
+    feat_hint, head_hint = _get_image_style_guidance()
+    inf(f"Article Format: [bold cyan]{format_label}[/]")
+    if CONFIG.get("feature_image_master_prompt"):
+        inf(f"Feature Master Prompt: [dim italic]{CONFIG['feature_image_master_prompt']}[/]")
+    if CONFIG.get("heading_image_master_prompt"):
+        inf(f"Heading Master Prompt: [dim italic]{CONFIG['heading_image_master_prompt']}[/]")
+
     BATCH   = CONFIG["batch_size"]
     batches = [sections[i:i+BATCH] for i in range(0, len(sections), BATCH)]
 
@@ -3877,7 +3946,9 @@ def phase_transform(extracted, url, db, seo_skill, category_override: str = ""):
         try:
             raw  = _run_agy(AGY_REWRITE_PROMPT.format(
                 seo_skill=seo_skill, n_sections=len(batches[0]),
-                title=title, sections_block=_build_sections_block(batches[0])),
+                title=title, sections_block=_build_sections_block(batches[0]),
+                format_rules=format_rules, feature_img_hint=feat_hint,
+                sec_img_hint=head_hint, paragraphs_example=paragraphs_example),
                 CONFIG["agy_timeout"])
             base = _parse_json(raw, len(batches[0]))
         except Exception as e:
@@ -3911,7 +3982,9 @@ def phase_transform(extracted, url, db, seo_skill, category_override: str = ""):
         try:
             raw = _run_agy(SEC_ONLY_PROMPT.format(
                 seo_skill=seo_skill, n=len(batch), title=title,
-                block=_build_sections_block(batch)), CONFIG["agy_timeout"])
+                block=_build_sections_block(batch),
+                format_rules=format_rules, sec_img_hint=head_hint,
+                paragraphs_example=paragraphs_example), CONFIG["agy_timeout"])
             fetched = _parse_json(raw, len(batch)).get("sections", [])
             if not fetched: raise ValueError("No sections returned")
         except Exception as e:
@@ -4371,6 +4444,12 @@ def phase_images(structured: dict, url: str, db, out_dir: Path) -> dict:
     # ── Feature image ────────────────────────────────────────
     feat_dest  = _img_path(idir, "feature")
     feat_scene = structured.get("feature_image_prompt", structured.get("title","hero"))
+    feat_master = CONFIG.get("feature_image_master_prompt", "").strip()
+    if feat_master:
+        if "{prompt}" in feat_master:
+            feat_scene = feat_master.replace("{prompt}", feat_scene)
+        else:
+            feat_scene = f"{feat_scene.rstrip('.,; ')}, {feat_master}"
     feat_key   = "img:feature_hero"
 
     feat_cached = (db_img_done(db, url, feat_key) and
@@ -4413,6 +4492,12 @@ def phase_images(structured: dict, url: str, db, out_dir: Path) -> dict:
                            sec.get("heading",f"section_{i}").lower())[:40]
             scene = (sec.get("image_prompt","").strip() or
                      f"{sec.get('heading','')}. {' '.join(sec.get('paragraphs',['']))[:150]}")
+            head_master = CONFIG.get("heading_image_master_prompt", "").strip()
+            if head_master:
+                if "{prompt}" in head_master:
+                    scene = head_master.replace("{prompt}", scene)
+                else:
+                    scene = f"{scene.rstrip('.,; ')}, {head_master}"
             label = f"Sec {i:02d}"
 
             # QuotaExceededError bubbles up to run_one_url only in agy_only mode
@@ -4656,21 +4741,92 @@ def phase_render(structured, raw_paths, out_dir, url, db):
 # ─────────────────────────────────────────────────────────────
 # PHASE 5: COMPILE
 # ─────────────────────────────────────────────────────────────
+def _format_inline_markdown(text: str) -> str:
+    """Converts bold and italic markdown to HTML tags."""
+    if not text:
+        return ""
+    text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
+    text = re.sub(r"__(.+?)__", r"<strong>\1</strong>", text)
+    text = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"<em>\1</em>", text)
+    return text
+
+def _render_content_to_html(paragraphs: list) -> str:
+    """Renders paragraphs, bullet points, and subheadings into styled HTML."""
+    if not paragraphs:
+        return ""
+    html_parts = []
+    list_items = []
+
+    def flush_list():
+        nonlocal list_items
+        if list_items:
+            items_html = "\n".join(f"      <li>{_format_inline_markdown(it)}</li>" for it in list_items)
+            html_parts.append(f'    <ul class="article-list">\n{items_html}\n    </ul>')
+            list_items = []
+
+    for item in paragraphs:
+        if not item:
+            continue
+        text = str(item).strip()
+        if not text:
+            continue
+
+        # Check for H3 or H2 subheading
+        if text.startswith("### ") or text.startswith("H3: ") or text.startswith("h3: "):
+            flush_list()
+            h_text = re.sub(r"^(###\s*|H3:\s*|h3:\s*)", "", text).strip()
+            html_parts.append(f'    <h3 class="sec-h3">{_format_inline_markdown(h_text)}</h3>')
+        elif text.startswith("## ") and not text.startswith("### "):
+            flush_list()
+            h_text = text[3:].strip()
+            html_parts.append(f'    <h3 class="sec-h3">{_format_inline_markdown(h_text)}</h3>')
+        # Check for list items
+        elif text.startswith("- ") or text.startswith("* ") or text.startswith("• ") or re.match(r"^\d+\.\s+", text):
+            lines = [l.strip() for l in text.splitlines() if l.strip()]
+            for line in lines:
+                if line.startswith("- ") or line.startswith("* ") or line.startswith("• "):
+                    list_items.append(line[2:].strip())
+                elif re.match(r"^\d+\.\s+", line):
+                    list_items.append(re.sub(r"^\d+\.\s+", "", line).strip())
+                else:
+                    flush_list()
+                    html_parts.append(f'    <p>{_format_inline_markdown(line)}</p>')
+        else:
+            flush_list()
+            if "\n-" in text or "\n*" in text or "\n•" in text:
+                sub_lines = [l.strip() for l in text.splitlines() if l.strip()]
+                for sline in sub_lines:
+                    if sline.startswith("- ") or sline.startswith("* ") or sline.startswith("• "):
+                        list_items.append(sline[2:].strip())
+                    else:
+                        flush_list()
+                        html_parts.append(f'    <p>{_format_inline_markdown(sline)}</p>')
+            else:
+                html_parts.append(f'    <p>{_format_inline_markdown(text)}</p>')
+
+    flush_list()
+    return "\n".join(html_parts)
+
 def _estimate_read_time(structured):
-    words = sum(len(p.split()) for s in structured.get("sections",[]) for p in s.get("paragraphs",[]))
-    words += len(structured.get("intro","").split())
-    words += sum(len(p.split()) for p in (structured.get("conclusion") or {}).get("paragraphs",[]))
+    words = sum(len(str(p).split()) for s in structured.get("sections",[]) for p in s.get("paragraphs",[]))
+    words += len(str(structured.get("intro","")).split())
+    words += sum(len(str(p).split()) for p in (structured.get("conclusion") or {}).get("paragraphs",[]))
     return max(1, round(words/200))
 
 def phase_compile(structured, rendered, out_dir):
     ph("5","COMPILE","Building HTML with SEO meta + feature image + conclusion")
     sections=structured.get("sections",[])
     for i,s in enumerate(sections):
+        s["rendered_html"] = _render_content_to_html(s.get("paragraphs", []))
         if i < len(rendered["sections"]):
             rp=Path(rendered["sections"][i])
             try: s["img"]=str(rp.relative_to(out_dir))
             except ValueError: s["img"]=str(rp)
         else: s["img"]=None
+    if structured.get("conclusion") and isinstance(structured["conclusion"], dict):
+        structured["conclusion"]["rendered_html"] = _render_content_to_html(
+            structured["conclusion"].get("paragraphs", [])
+        )
     html=Template(HTML_TEMPLATE).render(
         data=structured, feature_img=rendered["feature"], pin_img=rendered.get("pin"),
         generated_at=datetime.now().strftime("%d %b %Y, %H:%M"),
@@ -4856,6 +5012,12 @@ def main():
     parser.add_argument("--pinterest-pin", action="store_true",
                         help="Also render (and, on publish, upload) a tall Pinterest pin "
                              "image with the post title on it")
+    parser.add_argument("--article-format", choices=["paragraphs", "point_wise", "subheadings", "hybrid"], default=None,
+                        help="Article content format: paragraphs, point_wise, subheadings, hybrid (default: paragraphs)")
+    parser.add_argument("--feature-master-prompt", default=None,
+                        help="Master prompt/style addition appended to all feature image prompts")
+    parser.add_argument("--heading-master-prompt", default=None,
+                        help="Master prompt/style addition appended to all heading/section image prompts")
     parser.add_argument("--mode", choices=["online", "offline"], default=None,
                         help="Execution mode: 'online' (Firebase) or 'offline' (Bundle file)")
     parser.add_argument("--bundle", default=None,
@@ -4871,18 +5033,11 @@ def main():
     if cfg_file.exists():
         try:
             stored_cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
-            if "image_engine" in stored_cfg:
-                CONFIG["image_engine"] = stored_cfg["image_engine"]
-            if "server_url" in stored_cfg:
-                CONFIG["server_url"] = stored_cfg["server_url"]
-            if "pollinations_delay" in stored_cfg:
-                CONFIG["pollinations_delay"] = int(stored_cfg["pollinations_delay"])
-            if "heading_text_overlay" in stored_cfg:
-                CONFIG["heading_text_overlay"] = bool(stored_cfg["heading_text_overlay"])
-            if "feature_text_overlay" in stored_cfg:
-                CONFIG["feature_text_overlay"] = bool(stored_cfg["feature_text_overlay"])
-            if "pinterest_pin" in stored_cfg:
-                CONFIG["pinterest_pin"] = bool(stored_cfg["pinterest_pin"])
+            for k in ("image_engine", "server_url", "pollinations_delay",
+                      "heading_text_overlay", "feature_text_overlay", "pinterest_pin",
+                      "feature_image_master_prompt", "heading_image_master_prompt", "article_format"):
+                if k in stored_cfg:
+                    CONFIG[k] = stored_cfg[k]
         except Exception:
             pass
 
@@ -4892,6 +5047,12 @@ def main():
         CONFIG["server_url"] = args.server_url
     if args.pollinations_delay is not None:
         CONFIG["pollinations_delay"] = args.pollinations_delay
+    if args.article_format:
+        CONFIG["article_format"] = args.article_format
+    if args.feature_master_prompt is not None:
+        CONFIG["feature_image_master_prompt"] = args.feature_master_prompt
+    if args.heading_master_prompt is not None:
+        CONFIG["heading_image_master_prompt"] = args.heading_master_prompt
 
     _apply_image_settings(args.image_format, args.resolution,
                            args.feature_resolution, args.pin_resolution)
@@ -4925,6 +5086,12 @@ def main():
        f"(text {'ON' if CONFIG['feature_text_overlay'] else 'off'})")
     if CONFIG["pinterest_pin"]:
         ok(f"Pinterest pin: [cyan]ON[/] @ {CONFIG['pin_w']}×{CONFIG['pin_h']}")
+    _, _, fmt_label = _get_format_instructions(CONFIG.get("article_format", "paragraphs"))
+    ok(f"Article Format: [bold cyan]{fmt_label}[/]")
+    if CONFIG.get("feature_image_master_prompt"):
+        ok(f"Feature Master Prompt: [dim italic]{CONFIG['feature_image_master_prompt']}[/]")
+    if CONFIG.get("heading_image_master_prompt"):
+        ok(f"Heading Master Prompt: [dim italic]{CONFIG['heading_image_master_prompt']}[/]")
     console.print()
 
     # ── Load SEO skill ───────────────────────────────────────
@@ -4980,7 +5147,8 @@ def main():
                 bundle_data = bundle_tool.load_bundle(bundle_path)
                 b_settings = bundle_data.get("settings", {})
                 for k in ("image_engine", "server_url", "pollinations_delay",
-                          "heading_text_overlay", "feature_text_overlay", "pinterest_pin"):
+                          "heading_text_overlay", "feature_text_overlay", "pinterest_pin",
+                          "feature_image_master_prompt", "heading_image_master_prompt", "article_format"):
                     if k in b_settings:
                         CONFIG[k] = b_settings[k]
                 if "image_format" in b_settings or "image_resolution" in b_settings:

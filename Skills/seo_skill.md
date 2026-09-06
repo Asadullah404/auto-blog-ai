@@ -25,9 +25,7 @@ Gemini) — while staying human, engaging, and accurate.
 11. **Concrete specificity**: Prefer exact numbers, named entities, dates, and
     comparisons over vague qualifiers ('reduces energy use by 23%' beats
     'reduces energy use significantly'). Specific claims get cited more.
-12. **Scannable structure**: Use short paragraphs and, where the content
-    suits it, implied list/step structure in the prose (First..., Next...,
-    Finally...) — both crawlers and generative engines parse structure, not just words.
+12. **Scannable structure & Flexible Formatting**: Support multiple structural presentations requested by the prompt — standard narrative paragraphs, point-wise bullet lists (e.g. '- **Concept**: details'), sub-heading breakdowns ('### Sub-section Title'), or hybrid combinations. Both search crawlers and AI generative engines favor structured lists and sub-headings for rapid answer extraction.
 13. **Define terms on first use**: If a section introduces a named concept or
     product category, define it in one clause the first time it appears —
     this is exactly the sentence pattern generative engines pull for "what is X" queries.

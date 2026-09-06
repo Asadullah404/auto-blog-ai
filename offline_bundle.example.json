@@ -18,7 +18,10 @@
     "pin_resolution": "1000x1500",
     "heading_text_overlay": false,
     "feature_text_overlay": false,
-    "pinterest_pin": false
+    "pinterest_pin": false,
+    "feature_image_master_prompt": "8k, photorealistic, cinematic lighting",
+    "heading_image_master_prompt": "documentary photography, detailed scene",
+    "article_format": "paragraphs"
   },
   "links": [
     {

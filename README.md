@@ -322,15 +322,21 @@ has a modern dark interface with five dedicated tabs:
 - **WordPress Connection**: Site URL, username, Application Password, and **Test Connection** button.
 - **Publishing**: Live/Draft switch, Auto ON/OFF switch (see [§8](#8-how-auto-publish-is-controlled)),
   SEO plugin (Rank Math / None), image ALT text source (section heading / post title).
+- **Article Format & Structure**: Choose how articles are written and structured:
+  1. `Standard Paragraphs (Narrative)` — Classic in-depth prose with 2–4 paragraphs per section.
+  2. `Point-Wise / Bullet Points (Scannable)` — Brief intro followed by 4–6 detailed bullet points and actionable takeaways.
+  3. `Sub-Heading Wise (H2 + H3 Subsections)` — Main sections broken into 2–3 H3 sub-headings with focused explanations.
+  4. `Hybrid (Paragraphs + Bullet Points)` — Explanatory narrative paragraphs followed by an actionable key takeaways bullet list.
 - **AI Image Provider / Engine**: Choose between:
   1. `Antigravity (with Pollinations Fallback)` *(Recommended)* — Google Imagen primary, Pollinations AI fallback.
   2. `Pollinations AI Only` — Generates all visuals via Pollinations AI with anti-spam cooldown.
-  3. `Antigravity Only` — Pure Antigravity with 6h quota countdown.
+  3. `My Server (Colab / ngrok GPU)` — Custom self-hosted GPU image server.
+  4. `Antigravity Only` — Pure Antigravity with 6h quota countdown.
 - **Pollinations Cooldown Delay**: Set interval in seconds (default: 180s / 3 minutes) between Pollinations image calls.
 - **Image Formats & Dimensions**:
   - **Shared format**: WebP (smaller file size, high quality) or JPEG.
-  - **Heading Images**: Resolution preset or custom `WIDTHxHEIGHT` + overlay text toggle.
-  - **Feature Image**: Independent resolution preset or custom dimensions + title overlay toggle.
+  - **Heading Images**: Resolution preset or custom `WIDTHxHEIGHT` + overlay text toggle + **Master Prompt Addition** (style, quality, lighting instructions appended to every section image).
+  - **Feature Image**: Independent resolution preset or custom dimensions + title overlay toggle + **Master Prompt Addition** (style, quality, lighting instructions appended to every hero image).
   - **Pinterest Pin**: Toggle to render & upload an extra tall Pinterest pin image + resolution picker.
 - **Run Options**: "Fresh run" checkbox (wipes cached images/renders for a clean re-generation).
 - **💾 Save Settings**: Writes locally to `pipeline_config.json` and syncs up to Firestore cloud for multi-device consistency.
@@ -360,8 +366,12 @@ python automation.py [options]
 | Flag | Values | Default | Meaning |
 |---|---|---|---|
 | `--import-csv PATH` | path to a `.csv` file | none | One-shot import of URLs from a local CSV into Firestore for your account, then exit |
-| `--image-engine` | `agy_fallback`, `pollinations`, `agy_only` | `agy_fallback` | AI Image provider engine (Antigravity with Pollinations fallback, Pollinations only, or Antigravity only) |
+| `--image-engine` | `agy_fallback`, `pollinations`, `agy_only`, `my_server` | `agy_fallback` | AI Image provider engine (Antigravity with Pollinations fallback, Pollinations only, or Antigravity only) |
+| `--server-url` | URL string | none | Custom Colab / ngrok GPU server endpoint |
 | `--pollinations-delay` | integer (seconds) | `180` | Cooldown delay between consecutive Pollinations AI image requests |
+| `--article-format` | `paragraphs`, `point_wise`, `subheadings`, `hybrid` | `paragraphs` | Content formatting style (paragraphs, bullet points, H3 subheadings, or hybrid) |
+| `--feature-master-prompt` | string | `""` | Style / quality / lighting prompt appended to every feature/hero image |
+| `--heading-master-prompt` | string | `""` | Style / quality / lighting prompt appended to every section/heading image |
 | `--fresh` | flag | off | Wipe cached images/renders for this run (extract + rewrite text remain cached) |
 | `--image-format` | `webp`, `jpeg` | `webp` | Output format for every generated/rendered image |
 | `--resolution` | `sd`, `hd`, `fhd`, `2k`, or `WIDTHxHEIGHT` | `hd` | Section/heading image resolution — see [§7](#7-image-output--format-resolution--text-overlay) |

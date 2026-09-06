@@ -98,11 +98,28 @@ DEFAULTS = {
     "heading_text_overlay": False,     # paste each section heading onto its image
     "feature_text_overlay": False,     # paste the post title onto the feature image
     "pinterest_pin":        False,     # also render + upload a Pinterest pin image
+    "feature_image_master_prompt": "", # master prompt addition for feature/hero images
+    "heading_image_master_prompt": "", # master prompt addition for section/heading images
+    "article_format":              "paragraphs", # "paragraphs" | "point_wise" | "subheadings" | "hybrid"
     "display_links": [
         {"title": "", "url": ""},
         {"title": "", "url": ""},
         {"title": "", "url": ""},
     ],
+}
+
+ARTICLE_FORMAT_LABELS = {
+    "Standard Paragraphs (Narrative)":        "paragraphs",
+    "Point-Wise / Bullet Points (Scannable)": "point_wise",
+    "Sub-Heading Wise (H2 + H3 Subsections)": "subheadings",
+    "Hybrid (Paragraphs + Bullet Points)":    "hybrid",
+}
+ARTICLE_FORMAT_LABELS_REV = {v: k for k, v in ARTICLE_FORMAT_LABELS.items()}
+ARTICLE_FORMAT_DESCRIPTIONS = {
+    "paragraphs":  "Classic in-depth narrative format with 2–4 comprehensive paragraphs per section.",
+    "point_wise":  "Concise section intro followed by 4–6 scannable bullet points and actionable takeaways.",
+    "subheadings": "Main H2 sections structured into 2–3 H3 sub-headings with focused explanations.",
+    "hybrid":      "Rich explanatory paragraphs followed by an actionable key takeaways / bullet list.",
 }
 
 ENGINE_LABELS = {
@@ -1025,6 +1042,13 @@ class ControlPanel(ctk.CTk):
         if hasattr(self, "e_pol_delay"):
             self.e_pol_delay.configure(state="normal" if is_pol else "disabled")
 
+    def _on_format_structure_change(self, choice):
+        """Update format description when article format selection changes."""
+        fmt_key = ARTICLE_FORMAT_LABELS.get(choice, "paragraphs")
+        desc = ARTICLE_FORMAT_DESCRIPTIONS.get(fmt_key, "")
+        if hasattr(self, "lbl_format_desc"):
+            self.lbl_format_desc.configure(text=desc)
+
     # ── DASHBOARD ─────────────────────────────────────────────
     def _build_dashboard(self, page):
         page.grid_rowconfigure(0, weight=1)
@@ -1562,6 +1586,21 @@ class ControlPanel(ctk.CTk):
         self.alt_menu.set(ALT_LABELS_REV.get(self.cfg.get("alt_from", "heading"), "Section heading"))
         self.alt_menu.pack(fill="x", pady=(2, 0))
 
+        # Article Content & Structure
+        fmt_card = self._card(s, "📄", "Article Format & Structure", "Choose how article sections and content are structured and written")
+        ctk.CTkLabel(fmt_card, text="Article Content Format", anchor="w", text_color=COLORS["text_dim"]).pack(fill="x")
+        self.format_structure_menu = ctk.CTkOptionMenu(fmt_card, values=list(ARTICLE_FORMAT_LABELS.keys()),
+                                                      command=lambda choice: self._on_format_structure_change(choice))
+        self.format_structure_menu.set(ARTICLE_FORMAT_LABELS_REV.get(self.cfg.get("article_format", "paragraphs"),
+                                                                     "Standard Paragraphs (Narrative)"))
+        self.format_structure_menu.pack(fill="x", pady=(2, 6))
+
+        self.lbl_format_desc = ctk.CTkLabel(fmt_card, text="", anchor="w", justify="left",
+                                            text_color=COLORS["text_mute"], font=ctk.CTkFont(size=11),
+                                            wraplength=520)
+        self.lbl_format_desc.pack(fill="x", pady=(0, 4))
+        self._on_format_structure_change(self.format_structure_menu.get())
+
         # Images — format (shared) + independent settings per image type
         img = self._card(s, "🖼", "Images", "AI provider engine, format, and separate resolution/text-overlay controls per image type")
 
@@ -1594,14 +1633,36 @@ class ControlPanel(ctk.CTk):
         self._resolution_picker(head_img, "Resolution", "image_resolution")
         self.heading_text_var = tk.BooleanVar(value=bool(self.cfg.get("heading_text_overlay", True)))
         ctk.CTkCheckBox(head_img, text="Paste the section heading onto each image",
-                        variable=self.heading_text_var).pack(fill="x", pady=(2, 0))
+                        variable=self.heading_text_var).pack(fill="x", pady=(2, 6))
+
+        ctk.CTkLabel(head_img, text="Master Prompt Addition (Style / Quality / Lighting)",
+                     anchor="w", text_color=COLORS["text_dim"]).pack(fill="x", pady=(6, 0))
+        self.e_head_master_prompt = ctk.CTkEntry(head_img, height=36,
+                                                placeholder_text="e.g. 8k resolution, documentary photography, cinematic lighting, sharp detail",
+                                                fg_color=COLORS["bg_alt"], border_color=COLORS["border"])
+        self.e_head_master_prompt.pack(fill="x", pady=(2, 2))
+        if self.cfg.get("heading_image_master_prompt"):
+            self.e_head_master_prompt.insert(0, self.cfg["heading_image_master_prompt"])
+        ctk.CTkLabel(head_img, text="Appended to every section image prompt across all AI image engines.",
+                     anchor="w", text_color=COLORS["text_mute"], font=ctk.CTkFont(size=10)).pack(fill="x", pady=(0, 2))
 
         # Feature image
         feat_img = self._card(s, "🌟", "Feature Image", "The post's featured/hero image")
         self._resolution_picker(feat_img, "Resolution", "feature_resolution")
         self.feature_text_var = tk.BooleanVar(value=bool(self.cfg.get("feature_text_overlay", False)))
         ctk.CTkCheckBox(feat_img, text="Paste the post title onto the feature image",
-                        variable=self.feature_text_var).pack(fill="x", pady=(2, 0))
+                        variable=self.feature_text_var).pack(fill="x", pady=(2, 6))
+
+        ctk.CTkLabel(feat_img, text="Master Prompt Addition (Style / Quality / Lighting)",
+                     anchor="w", text_color=COLORS["text_dim"]).pack(fill="x", pady=(6, 0))
+        self.e_feat_master_prompt = ctk.CTkEntry(feat_img, height=36,
+                                                placeholder_text="e.g. 8k UHD, award-winning editorial hero photography, dramatic lighting",
+                                                fg_color=COLORS["bg_alt"], border_color=COLORS["border"])
+        self.e_feat_master_prompt.pack(fill="x", pady=(2, 2))
+        if self.cfg.get("feature_image_master_prompt"):
+            self.e_feat_master_prompt.insert(0, self.cfg["feature_image_master_prompt"])
+        ctk.CTkLabel(feat_img, text="Appended to every hero/feature image prompt across all AI image engines.",
+                     anchor="w", text_color=COLORS["text_mute"], font=ctk.CTkFont(size=10)).pack(fill="x", pady=(0, 2))
 
         # Pinterest pin image
         pin_img = self._card(s, "📌", "Pinterest Pin", "Optional extra tall image, uploaded and attached to the post")
@@ -1849,6 +1910,9 @@ class ControlPanel(ctk.CTk):
             "heading_text_overlay": bool(self.heading_text_var.get()),
             "feature_text_overlay": bool(self.feature_text_var.get()),
             "pinterest_pin":        bool(self.pinterest_var.get()),
+            "feature_image_master_prompt": self.e_feat_master_prompt.get().strip() if hasattr(self, "e_feat_master_prompt") else self.cfg.get("feature_image_master_prompt", ""),
+            "heading_image_master_prompt": self.e_head_master_prompt.get().strip() if hasattr(self, "e_head_master_prompt") else self.cfg.get("heading_image_master_prompt", ""),
+            "article_format":              ARTICLE_FORMAT_LABELS.get(self.format_structure_menu.get(), "paragraphs") if hasattr(self, "format_structure_menu") else self.cfg.get("article_format", "paragraphs"),
             "display_links":        dlinks,
         }
 
@@ -1863,6 +1927,9 @@ class ControlPanel(ctk.CTk):
         self.auto_var.set(bool(cfg.get("auto_publish", True)))
         self.seo_menu.set(SEO_LABELS_REV.get(cfg.get("seo_plugin", "rankmath"), "Rank Math (free)"))
         self.alt_menu.set(ALT_LABELS_REV.get(cfg.get("alt_from", "heading"), "Section heading"))
+        if hasattr(self, "format_structure_menu"):
+            self.format_structure_menu.set(ARTICLE_FORMAT_LABELS_REV.get(cfg.get("article_format", "paragraphs"), "Standard Paragraphs (Narrative)"))
+            self._on_format_structure_change(self.format_structure_menu.get())
         if hasattr(self, "engine_menu"):
             self.engine_menu.set(ENGINE_LABELS_REV.get(cfg.get("image_engine", "agy_fallback"),
                                                        "Antigravity (with Pollinations Fallback)"))
@@ -1874,6 +1941,12 @@ class ControlPanel(ctk.CTk):
         self.fresh_var.set(bool(cfg.get("fresh", False)))
         self.heading_text_var.set(bool(cfg.get("heading_text_overlay", True)))
         self.feature_text_var.set(bool(cfg.get("feature_text_overlay", False)))
+        if hasattr(self, "e_head_master_prompt"):
+            self.e_head_master_prompt.delete(0, "end")
+            self.e_head_master_prompt.insert(0, cfg.get("heading_image_master_prompt", ""))
+        if hasattr(self, "e_feat_master_prompt"):
+            self.e_feat_master_prompt.delete(0, "end")
+            self.e_feat_master_prompt.insert(0, cfg.get("feature_image_master_prompt", ""))
         self.pinterest_var.set(bool(cfg.get("pinterest_pin", False)))
         self._apply_resolution("image_resolution", cfg.get("image_resolution", "hd"))
         self._apply_resolution("feature_resolution", cfg.get("feature_resolution", "hd"))
@@ -2098,6 +2171,7 @@ class ControlPanel(ctk.CTk):
         if not pol_delay_val.isdigit():
             pol_delay_val = "180"
 
+        fmt_val = ARTICLE_FORMAT_LABELS.get(self.format_structure_menu.get(), "paragraphs") if hasattr(self, "format_structure_menu") else self.cfg.get("article_format", "paragraphs")
         args = [
             "--image-engine", engine_val,
             "--pollinations-delay", pol_delay_val,
@@ -2105,9 +2179,16 @@ class ControlPanel(ctk.CTk):
             "--resolution", self._resolve_resolution("image_resolution"),
             "--feature-resolution", self._resolve_resolution("feature_resolution"),
             "--pin-resolution", self._resolve_resolution("pin_resolution"),
+            "--article-format", fmt_val,
         ]
         if server_url:
             args.extend(["--server-url", server_url])
+        feat_master = self.e_feat_master_prompt.get().strip() if hasattr(self, "e_feat_master_prompt") else self.cfg.get("feature_image_master_prompt", "")
+        if feat_master:
+            args.extend(["--feature-master-prompt", feat_master])
+        head_master = self.e_head_master_prompt.get().strip() if hasattr(self, "e_head_master_prompt") else self.cfg.get("heading_image_master_prompt", "")
+        if head_master:
+            args.extend(["--heading-master-prompt", head_master])
         if self.fresh_var.get():
             args.append("--fresh")
         if self.feature_text_var.get():

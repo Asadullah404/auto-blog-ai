@@ -391,6 +391,14 @@ def _rankmath_meta(structured):
     return meta
 
 
+def _format_inline_markdown(text: str) -> str:
+    """Safely escapes text and formats inline markdown (bold and italic) as HTML."""
+    escaped = _esc_body(text)
+    escaped = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escaped)
+    escaped = re.sub(r"__(.+?)__", r"<strong>\1</strong>", escaped)
+    escaped = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"<em>\1</em>", escaped)
+    return escaped
+
 def _image_block(media_id, url, alt):
     return (f'<!-- wp:image {{"id":{media_id},"sizeSlug":"large","linkDestination":"none"}} -->\n'
             f'<figure class="wp-block-image size-large">'
@@ -398,11 +406,77 @@ def _image_block(media_id, url, alt):
             f'</figure>\n<!-- /wp:image -->')
 
 def _para_block(text):
-    return f'<!-- wp:paragraph -->\n<p>{_esc_body(text)}</p>\n<!-- /wp:paragraph -->'
+    return f'<!-- wp:paragraph -->\n<p>{_format_inline_markdown(text)}</p>\n<!-- /wp:paragraph -->'
 
 def _heading_block(text, level=2):
     return (f'<!-- wp:heading {{"level":{level}}} -->\n'
-            f'<h{level}>{_esc_body(text)}</h{level}>\n<!-- /wp:heading -->')
+            f'<h{level}>{_format_inline_markdown(text)}</h{level}>\n<!-- /wp:heading -->')
+
+def _list_block(items, ordered=False):
+    tag = "ol" if ordered else "ul"
+    attrs = '{"ordered":true}' if ordered else ''
+    li_html = "\n".join(f"<li>{_format_inline_markdown(it.strip())}</li>" for it in items if str(it).strip())
+    wp_comment = f'<!-- wp:list {attrs} -->' if attrs else '<!-- wp:list -->'
+    return f'{wp_comment}\n<{tag}>\n{li_html}\n</{tag}>\n<!-- /wp:list -->'
+
+def _render_paragraphs_to_gutenberg_blocks(paragraphs: list) -> list:
+    """
+    Converts a list of paragraphs / bullet points / subheadings into
+    clean Gutenberg blocks (wp:paragraph, wp:heading {level:3}, wp:list).
+    """
+    if not paragraphs:
+        return []
+    blocks = []
+    list_items = []
+
+    def flush_list():
+        nonlocal list_items
+        if list_items:
+            blocks.append(_list_block(list_items))
+            list_items = []
+
+    for item in paragraphs:
+        if not item:
+            continue
+        text = str(item).strip()
+        if not text:
+            continue
+
+        # Sub-heading (H3 or H2)
+        if text.startswith("### ") or text.startswith("H3: ") or text.startswith("h3: "):
+            flush_list()
+            h_text = re.sub(r"^(###\s*|H3:\s*|h3:\s*)", "", text).strip()
+            blocks.append(_heading_block(h_text, level=3))
+        elif text.startswith("## ") and not text.startswith("### "):
+            flush_list()
+            h_text = text[3:].strip()
+            blocks.append(_heading_block(h_text, level=3))
+        # Bullet list items
+        elif text.startswith("- ") or text.startswith("* ") or text.startswith("• ") or re.match(r"^\d+\.\s+", text):
+            lines = [l.strip() for l in text.splitlines() if l.strip()]
+            for line in lines:
+                if line.startswith("- ") or line.startswith("* ") or line.startswith("• "):
+                    list_items.append(line[2:].strip())
+                elif re.match(r"^\d+\.\s+", line):
+                    list_items.append(re.sub(r"^\d+\.\s+", "", line).strip())
+                else:
+                    flush_list()
+                    blocks.append(_para_block(line))
+        else:
+            flush_list()
+            if "\n-" in text or "\n*" in text or "\n•" in text:
+                sub_lines = [l.strip() for l in text.splitlines() if l.strip()]
+                for sline in sub_lines:
+                    if sline.startswith("- ") or sline.startswith("* ") or sline.startswith("• "):
+                        list_items.append(sline[2:].strip())
+                    else:
+                        flush_list()
+                        blocks.append(_para_block(sline))
+            else:
+                blocks.append(_para_block(text))
+
+    flush_list()
+    return blocks
 
 def _pin_block(url, alt, description):
     """A hidden tall image appended to the post body purely so Pinterest's
@@ -422,7 +496,8 @@ def _build_content(structured, section_media):
 
     intro = structured.get("intro")
     if intro:
-        blocks.append(_para_block(intro))
+        intro_items = [intro] if isinstance(intro, str) else list(intro)
+        blocks.extend(_render_paragraphs_to_gutenberg_blocks(intro_items))
 
     for i, sec in enumerate(structured.get("sections", [])):
         heading = sec.get("heading", f"Section {i+1}")
@@ -431,16 +506,14 @@ def _build_content(structured, section_media):
             mid, murl, malt = m
             blocks.append(_image_block(mid, murl, malt or heading))
         blocks.append(_heading_block(heading, level=2))
-        for para in sec.get("paragraphs", []):
-            if para and str(para).strip():
-                blocks.append(_para_block(para))
+        sec_blocks = _render_paragraphs_to_gutenberg_blocks(sec.get("paragraphs", []))
+        blocks.extend(sec_blocks)
 
     concl = structured.get("conclusion")
     if isinstance(concl, dict) and concl.get("paragraphs"):
         blocks.append(_heading_block(concl.get("heading", "Conclusion"), level=2))
-        for para in concl.get("paragraphs", []):
-            if para and str(para).strip():
-                blocks.append(_para_block(para))
+        concl_blocks = _render_paragraphs_to_gutenberg_blocks(concl.get("paragraphs", []))
+        blocks.extend(concl_blocks)
 
     return "\n\n".join(blocks)
 
