@@ -2831,10 +2831,20 @@ CONFIG = {
     # ── Pinterest pin image ─────────────────────────────────
     "pinterest_pin":         False,    # also render + upload a tall Pinterest pin image
     # ── Master prompts for AI image generation ──────────────
+    "master_image_prompt":        "",  # global master prompt addition for all images
+    "apply_master_to_all_images": True,# whether to automatically include master_image_prompt in all images
+    "image_type":                 "photo", # visual style preset (photo, cinematic, vector, 3d_render, vintage, studio, watercolor, custom)
+    "image_type_custom":          "",  # custom prompt addition when image_type == "custom"
     "feature_image_master_prompt": "", # style / lighting addition for feature image
     "heading_image_master_prompt": "", # style / lighting addition for section images
+    "pin_image_master_prompt":     "", # style / lighting addition for Pinterest pin image
+    "pin_image_type":              "inherit", # style preset for Pinterest pin ("inherit" or key from IMAGE_TYPES)
+    "pin_image_type_custom":       "", # custom style prompt for Pinterest pin when pin_image_type == "custom"
+    # ── Master Content / Text Directive ─────────────────────
+    "master_text_prompt":         "",  # master prompt / tone / persona for article rewrite
     # ── Article format structure ────────────────────────────
     "article_format":        "paragraphs", # "paragraphs" | "point_wise" | "subheadings" | "hybrid"
+    "skills_enabled":        [],       # list of skill filenames to load (empty = all in Skills/)
     # ── Firestore link state (multi-PC shared link-list, per signed-in account) ──
     # firebase_config.json / firebase_session.json filenames are owned by
     # firebase_auth.py, not repeated here.
@@ -3373,7 +3383,7 @@ def quota_wait():
     console.print()
 
 # ─────────────────────────────────────────────────────────────
-# SEO SKILL
+# SEO, GEO & AEO SKILLS ENGINE (Skills/*.md)
 # ─────────────────────────────────────────────────────────────
 SEO_SKILL_CONTENT = """\
 # SEO Copywriting Skill v2.0
@@ -3421,16 +3431,222 @@ Return strictly valid JSON — no preamble, no markdown fences:
 - End each section with a forward-looking sentence or micro-CTA
 """
 
-def ensure_seo_skill(skills_dir: str) -> str:
+GEO_SKILL_CONTENT = """\
+# GEO (Generative Engine Optimization) Skill v1.0
+## Purpose
+Optimize content to maximize direct citations, summaries, and source attribution by AI generative search engines (Google AI Overviews, ChatGPT Search, Perplexity AI, Microsoft Copilot, Claude).
+
+## Core GEO Rules
+1. **Answer-First Inverted Pyramid**:
+   - Begin every section with a direct, assertive 1-2 sentence response to the heading's explicit or implicit query.
+   - Put the primary conclusion or fact in the very first 30 words of each section.
+2. **Citable Standalone Claims**:
+   - Ensure key evidentiary sentences are grammatically complete without relying on relative pronouns (avoid 'This means that...', use 'This metric indicates that...').
+   - Sentences should remain informative when extracted out of context by an AI snippet parser.
+3. **High Information Density (Information Gain)**:
+   - Eliminate filler phrases ('In today's fast-paced world', 'It is important to remember').
+   - Maximize named entities (tools, technologies, recognized organizations, specific standards).
+   - Use concrete statistics, quantitative ranges, dates, and empirical benchmarks instead of vague adjectives.
+4. **Definition & Contrast Anchors**:
+   - Define new terms immediately upon first mention with a clear 'is a [category] that [function]' pattern.
+   - Include comparison statements ('Unlike traditional X, Y achieves Z through...') which AI engines favor for comparative queries.
+5. **Entity-Attribute-Value Relationships**:
+   - Explicitly connect subjects to their tangible attributes (e.g. costs, timelines, requirements, specifications) to facilitate knowledge graph extraction.
+"""
+
+AEO_SKILL_CONTENT = """\
+# AEO (Answer Engine Optimization) Skill v1.0
+## Purpose
+Optimize content for zero-click direct answers, featured snippets, voice search, and conversational query resolution in Google, Perplexity, Siri, and LLM chat interfaces.
+
+## Core AEO Rules
+1. **Direct Snippet Targeting (40-60 Word Core Answer)**:
+   - For every question-based heading, provide a crystal-clear, self-contained definition or summary answer in exactly 40-60 words directly beneath the heading.
+   - Match the grammatical form of the query: 'How to...' requires imperative steps; 'What is...' requires a categorical definition; 'Why does...' requires causal explanation.
+2. **Structured Step & Process Formats**:
+   - When explaining processes, workflows, or comparisons, use distinct sequential list items or bullet anchors.
+   - Use bold lead-ins for each item (e.g. '- **Step Name**: actionable directive').
+3. **Query-Intent Alignment**:
+   - Address the four primary search intents explicitly within each topic:
+     * *Informational* (What is it, how it works)
+     * *Comparative* (Pros vs. cons, alternatives)
+     * *Transactional / Practical* (Pricing, prerequisites, implementation)
+     * *Troubleshooting* (Common mistakes, pitfalls to avoid)
+4. **Conversational Natural Language**:
+   - Frame headings and subheadings matching natural conversational voice queries (e.g. 'How much does X cost in 2026?' rather than 'Cost Analysis').
+   - Use active voice and second-person engagement ('You can configure...', 'Your team should verify...').
+5. **Key Takeaways & TL;DR Anchors**:
+   - Ensure actionable takeaway summaries are highlighted so answer engines can quickly lift rapid conclusions.
+"""
+
+def load_all_skills(skills_dir: str, enabled_skills: list = None) -> str:
+    """
+    Scans skills_dir for all .md files (seo_skill.md, geo_skill.md, aeo_skill.md, etc.)
+    and combines their instructions. Seeds default skills if missing.
+    """
     sdir = Path(skills_dir)
     sdir.mkdir(parents=True, exist_ok=True)
-    skill_path = sdir / CONFIG["seo_skill_file"]
-    if skill_path.exists():
-        ok(f"SEO skill loaded from [cyan]{skill_path}[/]")
-        return skill_path.read_text(encoding="utf-8")
-    skill_path.write_text(SEO_SKILL_CONTENT, encoding="utf-8")
-    ok(f"SEO skill created → [cyan]{skill_path}[/]")
-    return SEO_SKILL_CONTENT
+
+    default_skills = {
+        CONFIG.get("seo_skill_file", "seo_skill.md"): SEO_SKILL_CONTENT,
+        "geo_skill.md": GEO_SKILL_CONTENT,
+        "aeo_skill.md": AEO_SKILL_CONTENT,
+    }
+    for filename, content in default_skills.items():
+        p = sdir / filename
+        if not p.exists():
+            try: p.write_text(content, encoding="utf-8")
+            except Exception: pass
+
+    md_files = sorted(list(sdir.glob("*.md")))
+    if enabled_skills:
+        enabled_set = set(enabled_skills)
+        md_files = [f for f in md_files if f.name in enabled_set]
+
+    if not md_files:
+        return SEO_SKILL_CONTENT
+
+    skill_blocks = []
+    loaded_names = []
+    for f in md_files:
+        try:
+            txt = f.read_text(encoding="utf-8").strip()
+            if txt:
+                skill_blocks.append(f"# === SKILL: {f.name} ===\n{txt}")
+                loaded_names.append(f.name)
+        except Exception as e:
+            warn(f"Could not read skill file {f.name}: {e}")
+
+    if not skill_blocks:
+        return SEO_SKILL_CONTENT
+
+    ok(f"Skills loaded ([cyan]{len(loaded_names)}[/]): [cyan]{', '.join(loaded_names)}[/]")
+    return "\n\n".join(skill_blocks)
+
+def ensure_seo_skill(skills_dir: str) -> str:
+    """Backward-compatible loader that loads all active skills."""
+    enabled = CONFIG.get("skills_enabled") or None
+    return load_all_skills(skills_dir, enabled_skills=enabled)
+
+# ─────────────────────────────────────────────────────────────
+# IMAGE TYPE PRESETS & MASTER PROMPT RESOLVER
+# ─────────────────────────────────────────────────────────────
+IMAGE_TYPES = {
+    "photo": {
+        "label": "Photorealistic (35mm Documentary)",
+        "prompt": "hyper-realistic documentary photography, 35mm lens, natural daylight, authentic textures, unedited raw photo, 8k resolution, cinematic lighting, sharp focus",
+        "negative": "cartoon, illustration, 3d render, CGI, drawing, painting, blurry, deformed",
+    },
+    "cinematic": {
+        "label": "Cinematic Film Still (70mm)",
+        "prompt": "cinematic movie still, 70mm anamorphic lens, dramatic chiaroscuro lighting, Panavision, atmospheric haze, color graded, ultra-detailed, depth of field",
+        "negative": "low quality, snapshot, amateur, flat lighting, oversaturated",
+    },
+    "vector": {
+        "label": "Modern Flat Vector / Illustration",
+        "prompt": "modern editorial flat vector illustration, clean geometric lines, minimalist aesthetic, sophisticated vibrant color palette, Behance trending graphic design",
+        "negative": "photo, photorealistic, 3d, realistic textures, grainy, noisy",
+    },
+    "3d_render": {
+        "label": "3D Isometric / Clay Render",
+        "prompt": "detailed 3D isometric render, Octane Render, soft ambient occlusion, matte clay textures, clean studio lighting, smooth finishes, 4k",
+        "negative": "flat 2d, sketch, photograph, grainy, distorted",
+    },
+    "vintage": {
+        "label": "Vintage / Retro 1970s Film",
+        "prompt": "vintage 1970s Kodachrome film photography, warm color tones, subtle film grain, nostalgic light leaks, timeless editorial aesthetic, retro palette",
+        "negative": "modern digital look, sharp CGI, neon, plastic",
+    },
+    "studio": {
+        "label": "Commercial Studio / Product Macro",
+        "prompt": "commercial studio photography, clean white and soft neutral lighting, high-key illumination, crisp focus, hyper-detailed macro view, pristine product shot",
+        "negative": "outdoor, noisy, messy background, low resolution, blurry",
+    },
+    "watercolor": {
+        "label": "Watercolor & Ink Illustration",
+        "prompt": "expressive watercolor and ink illustration, delicate pigment washes, visible paper texture, fluid artistic brushstrokes, vibrant tones, handcrafted art",
+        "negative": "photo, photorealistic, 3d render, plastic, digital CGI",
+    },
+    "custom": {
+        "label": "Custom Style",
+        "prompt": "",
+        "negative": "blurry, low quality, deformed, bad anatomy",
+    },
+}
+
+def _resolve_image_prompt(scene: str, image_role: str = "section") -> str:
+    """
+    Combines the base scene prompt with:
+      1. Master Image Prompt (applied to all images if apply_master_to_all_images is True)
+      2. Specific Master Prompt overrides (feature_image_master_prompt for hero, heading_image_master_prompt for sections)
+      3. Image Type visual style addition (from IMAGE_TYPES or custom)
+    """
+    clean_scene = re.sub(r'[\r\n\t]+', ' ', scene).strip().rstrip(".,; ")
+    parts = []
+
+    # 1. Master Image Prompt
+    master_img = CONFIG.get("master_image_prompt", "").strip()
+    apply_all = CONFIG.get("apply_master_to_all_images", True)
+    if master_img and (apply_all or image_role == "general"):
+        if "{prompt}" in master_img:
+            clean_scene = master_img.replace("{prompt}", clean_scene)
+        else:
+            parts.append(master_img)
+
+    # 2. Role-specific master prompt overrides
+    if image_role == "feature":
+        feat_master = CONFIG.get("feature_image_master_prompt", "").strip()
+        if feat_master:
+            if "{prompt}" in feat_master:
+                clean_scene = feat_master.replace("{prompt}", clean_scene)
+            else:
+                parts.append(feat_master)
+    elif image_role == "section":
+        head_master = CONFIG.get("heading_image_master_prompt", "").strip()
+        if head_master:
+            if "{prompt}" in head_master:
+                clean_scene = head_master.replace("{prompt}", clean_scene)
+            else:
+                parts.append(head_master)
+    elif image_role == "pin":
+        pin_master = CONFIG.get("pin_image_master_prompt", "").strip()
+        if pin_master:
+            if "{prompt}" in pin_master:
+                clean_scene = pin_master.replace("{prompt}", clean_scene)
+            else:
+                parts.append(pin_master)
+
+    parts.insert(0, clean_scene)
+
+    # 3. Image Type style injection
+    img_type_key = CONFIG.get("image_type", "photo")
+    if image_role == "pin":
+        pin_type = CONFIG.get("pin_image_type", "inherit")
+        if pin_type and pin_type != "inherit":
+            img_type_key = pin_type
+
+    if img_type_key == "custom":
+        custom_style = (CONFIG.get("pin_image_type_custom", "").strip()
+                        if image_role == "pin" and CONFIG.get("pin_image_type") == "custom"
+                        else CONFIG.get("image_type_custom", "").strip())
+        if custom_style:
+            parts.append(custom_style)
+    elif img_type_key in IMAGE_TYPES:
+        type_style = IMAGE_TYPES[img_type_key]["prompt"]
+        if type_style:
+            parts.append(type_style)
+
+    combined = ", ".join(p.strip().rstrip(".,; ") for p in parts if p.strip())
+    if "no text" not in combined.lower():
+        combined += ", no text, no watermark"
+    return combined
+
+def _get_master_text_directive() -> str:
+    """Returns the formatted Master Content & Text Directive if configured."""
+    directive = CONFIG.get("master_text_prompt", "").strip()
+    if not directive:
+        return ""
+    return f"- MASTER CONTENT & TONE DIRECTIVE:\n  {directive}"
 
 # ── AGY CORE ─────────────────────────────────────────────────
 _AGY_CANARY_OK = None
@@ -3735,6 +3951,7 @@ CONCLUSION_PROMPT = """\
 ---
 Write a compelling conclusion section for the article "{title}".
 {extra}
+{master_text_directive}
 
 Return ONLY valid JSON (no markdown, no preamble). NEVER use a double-quote
 character " inside a string value — use single quotes ' ' instead:
@@ -3748,7 +3965,10 @@ character " inside a string value — use single quotes ' ' instead:
 """
 
 def _rewrite_conclusion(title, seo_skill, extra=""):
-    prompt = CONCLUSION_PROMPT.format(seo_skill=seo_skill, title=title, extra=extra)
+    prompt = CONCLUSION_PROMPT.format(
+        seo_skill=seo_skill, title=title, extra=extra,
+        master_text_directive=_get_master_text_directive()
+    )
     try:
         raw = _run_agy(prompt, CONFIG["agy_timeout"])
         parsed = _parse_json(raw)
@@ -3808,10 +4028,30 @@ def _get_format_instructions(fmt: str = None) -> tuple:
 
 def _get_image_style_guidance() -> tuple:
     """Returns style prompt hints for feature and heading images if configured."""
+    img_type_key = CONFIG.get("image_type", "photo")
+    type_style = ""
+    if img_type_key == "custom":
+        type_style = CONFIG.get("image_type_custom", "").strip()
+    elif img_type_key in IMAGE_TYPES:
+        type_style = IMAGE_TYPES[img_type_key]["prompt"]
+
+    master_img = CONFIG.get("master_image_prompt", "").strip()
+    apply_all = CONFIG.get("apply_master_to_all_images", True)
     feat_master = CONFIG.get("feature_image_master_prompt", "").strip()
     head_master = CONFIG.get("heading_image_master_prompt", "").strip()
-    feat_hint = f"hero scene 50 words, style requirement: {feat_master}" if feat_master else "hero scene 50 words"
-    head_hint = f"scene, style requirement: {head_master}" if head_master else "scene"
+
+    feat_parts = ["hero scene 50 words"]
+    if type_style: feat_parts.append(f"visual style: {type_style}")
+    if master_img and apply_all: feat_parts.append(master_img)
+    if feat_master: feat_parts.append(feat_master)
+    feat_hint = ", ".join(feat_parts)
+
+    head_parts = ["scene"]
+    if type_style: head_parts.append(f"visual style: {type_style}")
+    if master_img and apply_all: head_parts.append(master_img)
+    if head_master: head_parts.append(head_master)
+    head_hint = ", ".join(head_parts)
+
     return feat_hint, head_hint
 
 AGY_REWRITE_PROMPT = """\
@@ -3833,6 +4073,7 @@ RULES:
 - Do NOT use literal linebreaks inside JSON strings.
 - Return exactly {n_sections} section objects in "sections".
 {format_rules}
+{master_text_directive}
 - Include a "conclusion" object.
 
 JSON schema:
@@ -3863,6 +4104,7 @@ RULES:
   quotes ' ' if you need to quote or emphasize a word or phrase.
 - Do NOT use literal linebreaks inside JSON strings.
 {format_rules}
+{master_text_directive}
 
 Sections:
 {block}
@@ -3879,11 +4121,13 @@ def _build_sections_block(sections):
 
 def _rewrite_single_section(s, title, seo_skill):
     format_rules, paragraphs_example, _ = _get_format_instructions(CONFIG.get("article_format", "paragraphs"))
+    master_directive = _get_master_text_directive()
     _, head_hint = _get_image_style_guidance()
     prompt = (f"{seo_skill}\n---\nRewrite this section from \"{title}\" for SEO.\n"
               f"HEADING: {s['heading']}\nBODY: {s.get('body','')[:1500]}\n\n"
               f"RULES:\n"
               f"{format_rules}\n"
+              f"{master_directive}\n"
               f"Return ONLY valid JSON. NEVER use a double-quote character \" "
               f"inside a string value — use single quotes ' ' instead:\n"
               f"{{\"heading\":\"{s['heading']}\","
@@ -3947,7 +4191,8 @@ def phase_transform(extracted, url, db, seo_skill, category_override: str = ""):
             raw  = _run_agy(AGY_REWRITE_PROMPT.format(
                 seo_skill=seo_skill, n_sections=len(batches[0]),
                 title=title, sections_block=_build_sections_block(batches[0]),
-                format_rules=format_rules, feature_img_hint=feat_hint,
+                format_rules=format_rules, master_text_directive=_get_master_text_directive(),
+                feature_img_hint=feat_hint,
                 sec_img_hint=head_hint, paragraphs_example=paragraphs_example),
                 CONFIG["agy_timeout"])
             base = _parse_json(raw, len(batches[0]))
@@ -3983,7 +4228,8 @@ def phase_transform(extracted, url, db, seo_skill, category_override: str = ""):
             raw = _run_agy(SEC_ONLY_PROMPT.format(
                 seo_skill=seo_skill, n=len(batch), title=title,
                 block=_build_sections_block(batch),
-                format_rules=format_rules, sec_img_hint=head_hint,
+                format_rules=format_rules, master_text_directive=_get_master_text_directive(),
+                sec_img_hint=head_hint,
                 paragraphs_example=paragraphs_example), CONFIG["agy_timeout"])
             fetched = _parse_json(raw, len(batch)).get("sections", [])
             if not fetched: raise ValueError("No sections returned")
@@ -4219,9 +4465,15 @@ def _generate_one_image_myserver(scene: str, dest: Path, width: int, height: int
     sd_width = max(64, int(round(width / 8.0)) * 8)
     sd_height = max(64, int(round(height / 8.0)) * 8)
 
+    img_type_key = CONFIG.get("image_type", "photo")
+    if "pin" in label.lower() and CONFIG.get("pin_image_type") and CONFIG.get("pin_image_type") != "inherit":
+        img_type_key = CONFIG["pin_image_type"]
+    custom_neg = IMAGE_TYPES.get(img_type_key, {}).get("negative", "")
+    neg_prompt = f"{custom_neg}, text, watermark, writing, words, letters, font, typography" if custom_neg else "cartoon, drawing, painting, blurry, deformed hands, bad quality, oversaturated, CGI, text, watermark, writing, words, letters, font, typography"
+
     payload = {
         "prompt": clean_prompt,
-        "negative_prompt": "cartoon, drawing, painting, blurry, deformed hands, bad quality, oversaturated, CGI, text, watermark, writing, words, letters, font, typography",
+        "negative_prompt": neg_prompt,
         "width": sd_width,
         "height": sd_height,
         "steps": 25,
@@ -4430,8 +4682,9 @@ def phase_images(structured: dict, url: str, db, out_dir: Path) -> dict:
                    else "Antigravity (with Pollinations fallback)" if engine == "agy_fallback"
                    else "Pollinations AI Only" if engine == "pollinations"
                    else f"Antigravity Only (quota=wait {CONFIG['quota_wait_hours']}h+resume)")
+    img_type_label = IMAGE_TYPES.get(CONFIG.get("image_type", "photo"), {}).get("label", "Photorealistic")
     ph("3", "AI IMAGES",
-       f"Sequential — 1 feature + all sections | Engine: {engine_desc} | Format: {CONFIG['image_format'].upper()}")
+       f"Sequential — 1 feature + all sections | Engine: {engine_desc} | Style: {img_type_label} | Format: {CONFIG['image_format'].upper()}")
 
     if engine not in ("pollinations", "my_server"):
         _check_agy(live=True)
@@ -4443,13 +4696,8 @@ def phase_images(structured: dict, url: str, db, out_dir: Path) -> dict:
 
     # ── Feature image ────────────────────────────────────────
     feat_dest  = _img_path(idir, "feature")
-    feat_scene = structured.get("feature_image_prompt", structured.get("title","hero"))
-    feat_master = CONFIG.get("feature_image_master_prompt", "").strip()
-    if feat_master:
-        if "{prompt}" in feat_master:
-            feat_scene = feat_master.replace("{prompt}", feat_scene)
-        else:
-            feat_scene = f"{feat_scene.rstrip('.,; ')}, {feat_master}"
+    raw_feat   = structured.get("feature_image_prompt", structured.get("title","hero"))
+    feat_scene = _resolve_image_prompt(raw_feat, image_role="feature")
     feat_key   = "img:feature_hero"
 
     feat_cached = (db_img_done(db, url, feat_key) and
@@ -4484,20 +4732,11 @@ def phase_images(structured: dict, url: str, db, out_dir: Path) -> dict:
             dest = _img_path(idir, f"sec_{i:02d}")
             sec_paths.append(dest)
 
-            # Prefix with the section index: two sections with similar-enough
-            # headings would otherwise slugify to the same first-40-chars
-            # string, collide on img_key, and silently reuse each other's
-            # cached image via the shutil.copy branch in _generate_one_image.
             slug  = f"{i:02d}_" + re.sub(r"[^a-z0-9]+","_",
                            sec.get("heading",f"section_{i}").lower())[:40]
-            scene = (sec.get("image_prompt","").strip() or
-                     f"{sec.get('heading','')}. {' '.join(sec.get('paragraphs',['']))[:150]}")
-            head_master = CONFIG.get("heading_image_master_prompt", "").strip()
-            if head_master:
-                if "{prompt}" in head_master:
-                    scene = head_master.replace("{prompt}", scene)
-                else:
-                    scene = f"{scene.rstrip('.,; ')}, {head_master}"
+            raw_scene = (sec.get("image_prompt","").strip() or
+                         f"{sec.get('heading','')}. {' '.join(sec.get('paragraphs',['']))[:150]}")
+            scene = _resolve_image_prompt(raw_scene, image_role="section")
             label = f"Sec {i:02d}"
 
             # QuotaExceededError bubbles up to run_one_url only in agy_only mode
@@ -4514,9 +4753,34 @@ def phase_images(structured: dict, url: str, db, out_dir: Path) -> dict:
                 inf(f"  Waiting {inter_delay}s ...")
                 time.sleep(inter_delay)
 
+    # ── Pinterest pin raw image (optional, tall vertical AI image) ──
+    pin_dest = None
+    if CONFIG.get("pinterest_pin"):
+        pin_dest = _img_path(idir, "pin")
+        raw_pin = structured.get("pin_image_prompt") or structured.get("feature_image_prompt") or structured.get("title", "pin")
+        pin_scene = _resolve_image_prompt(raw_pin, image_role="pin")
+        pin_key = "img:pin"
+
+        pin_cached = (db_img_done(db, url, pin_key) and
+                      pin_dest.exists() and
+                      pin_dest.stat().st_size > CONFIG["img_min_file_bytes"])
+
+        if pin_cached:
+            ok("Pinterest pin raw image [dim]resumed from cache[/]")
+        else:
+            inf(f"Pinterest pin raw image → [dim italic]{pin_scene[:80]}[/]")
+            _generate_one_image(pin_scene, "pin", pin_dest, "Pinterest Pin", db, url,
+                                width=CONFIG["pin_w"], height=CONFIG["pin_h"])
+            if pin_dest.exists() and pin_dest.stat().st_size > CONFIG["img_min_file_bytes"]:
+                ok(f"Pinterest pin raw image ✓ ({pin_dest.stat().st_size // 1024} KB)")
+                generated_count += 1
+                if engine not in ("pollinations", "my_server"):
+                    inf(f"  Waiting {inter_delay}s ...")
+                    time.sleep(inter_delay)
+
     inf(f"Images generated this run: [cyan]{generated_count}[/]")
     _clear_quota_end_time()   # every image succeeded — quota is confirmed fine right now
-    return {"feature": feat_dest, "sections": sec_paths}
+    return {"feature": feat_dest, "sections": sec_paths, "pin": pin_dest}
 
 # ─────────────────────────────────────────────────────────────
 # PHASE 4: RENDER
@@ -4681,7 +4945,10 @@ def phase_render(structured, raw_paths, out_dir, url, db):
         else:
             try:
                 title = structured.get("title", "")
-                _render_image(feat_raw, title, pin_out,
+                pin_src = raw_paths.get("pin") or feat_raw
+                if not (pin_src and Path(pin_src).exists() and Path(pin_src).stat().st_size > 1000):
+                    pin_src = feat_raw
+                _render_image(pin_src, title, pin_out,
                                CONFIG["pin_w"], CONFIG["pin_h"], font_path)
                 ok(f"Pinterest pin rendered: [cyan]{pin_out.name}[/]")
             except Exception as e:
@@ -5014,10 +5281,30 @@ def main():
                              "image with the post title on it")
     parser.add_argument("--article-format", choices=["paragraphs", "point_wise", "subheadings", "hybrid"], default=None,
                         help="Article content format: paragraphs, point_wise, subheadings, hybrid (default: paragraphs)")
+    parser.add_argument("--master-text-prompt", default=None,
+                        help="Master content/tone directive injected into article rewrite")
+    parser.add_argument("--master-image-prompt", default=None,
+                        help="Universal master prompt addition applied to all images")
+    parser.add_argument("--apply-master-to-all", dest="apply_master_to_all", action="store_true", default=None,
+                        help="Apply master image prompt to all images (feature, sections, pin)")
+    parser.add_argument("--no-apply-master-to-all", dest="apply_master_to_all", action="store_false",
+                        help="Do NOT apply master image prompt to all images")
+    parser.add_argument("--image-type", choices=list(IMAGE_TYPES.keys()), default=None,
+                        help="Visual style preset: photo, cinematic, vector, 3d_render, vintage, studio, watercolor, custom")
+    parser.add_argument("--custom-image-type", default=None,
+                        help="Custom visual style text when --image-type is 'custom'")
+    parser.add_argument("--skills", default=None,
+                        help="Comma-separated list of skill files from Skills/ to load (e.g. seo_skill.md,geo_skill.md)")
     parser.add_argument("--feature-master-prompt", default=None,
                         help="Master prompt/style addition appended to all feature image prompts")
     parser.add_argument("--heading-master-prompt", default=None,
                         help="Master prompt/style addition appended to all heading/section image prompts")
+    parser.add_argument("--pin-master-prompt", default=None,
+                        help="Master prompt/style addition appended to Pinterest pin image prompt")
+    parser.add_argument("--pin-image-type", choices=["inherit"] + list(IMAGE_TYPES.keys()), default=None,
+                        help="Visual style preset for Pinterest pin image (or 'inherit' to match global image-type)")
+    parser.add_argument("--custom-pin-image-type", default=None,
+                        help="Custom visual style text when --pin-image-type is 'custom'")
     parser.add_argument("--mode", choices=["online", "offline"], default=None,
                         help="Execution mode: 'online' (Firebase) or 'offline' (Bundle file)")
     parser.add_argument("--bundle", default=None,
@@ -5035,7 +5322,10 @@ def main():
             stored_cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
             for k in ("image_engine", "server_url", "pollinations_delay",
                       "heading_text_overlay", "feature_text_overlay", "pinterest_pin",
-                      "feature_image_master_prompt", "heading_image_master_prompt", "article_format"):
+                      "feature_image_master_prompt", "heading_image_master_prompt",
+                      "pin_image_master_prompt", "pin_image_type", "pin_image_type_custom", "article_format",
+                      "master_text_prompt", "master_image_prompt", "apply_master_to_all_images",
+                      "image_type", "image_type_custom", "skills_enabled"):
                 if k in stored_cfg:
                     CONFIG[k] = stored_cfg[k]
         except Exception:
@@ -5049,10 +5339,28 @@ def main():
         CONFIG["pollinations_delay"] = args.pollinations_delay
     if args.article_format:
         CONFIG["article_format"] = args.article_format
+    if args.master_text_prompt is not None:
+        CONFIG["master_text_prompt"] = args.master_text_prompt
+    if args.master_image_prompt is not None:
+        CONFIG["master_image_prompt"] = args.master_image_prompt
+    if args.apply_master_to_all is not None:
+        CONFIG["apply_master_to_all_images"] = args.apply_master_to_all
+    if args.image_type:
+        CONFIG["image_type"] = args.image_type
+    if args.custom_image_type is not None:
+        CONFIG["image_type_custom"] = args.custom_image_type
+    if args.skills:
+        CONFIG["skills_enabled"] = [s.strip() for s in args.skills.split(",") if s.strip()]
     if args.feature_master_prompt is not None:
         CONFIG["feature_image_master_prompt"] = args.feature_master_prompt
     if args.heading_master_prompt is not None:
         CONFIG["heading_image_master_prompt"] = args.heading_master_prompt
+    if args.pin_master_prompt is not None:
+        CONFIG["pin_image_master_prompt"] = args.pin_master_prompt
+    if args.pin_image_type is not None:
+        CONFIG["pin_image_type"] = args.pin_image_type
+    if args.custom_pin_image_type is not None:
+        CONFIG["pin_image_type_custom"] = args.custom_pin_image_type
 
     _apply_image_settings(args.image_format, args.resolution,
                            args.feature_resolution, args.pin_resolution)
@@ -5079,15 +5387,27 @@ def main():
                    else "Antigravity Only")
     ok(f"Image Engine: [bold cyan]{engine_desc}[/] "
        f"(Pollinations delay: {CONFIG['pollinations_delay']}s)")
+    img_style_info = IMAGE_TYPES.get(CONFIG.get("image_type", "photo"), {}).get("label", "Photorealistic")
+    ok(f"Image Style: [bold cyan]{img_style_info}[/]" +
+       (f" ([dim]{CONFIG['image_type_custom'][:40]}[/])" if CONFIG.get("image_type") == "custom" and CONFIG.get("image_type_custom") else ""))
+    if CONFIG.get("master_image_prompt"):
+        ok(f"Master Image Prompt: [dim italic]{CONFIG['master_image_prompt']}[/] "
+           f"(All images: {'YES' if CONFIG.get('apply_master_to_all_images') else 'Overrides only'})")
     ok(f"Images: [cyan]{CONFIG['image_format'].upper()}[/] — "
        f"sections {CONFIG['render_w']}×{CONFIG['render_h']} "
        f"(text {'ON' if CONFIG['heading_text_overlay'] else 'off'}), "
        f"feature {CONFIG['feature_w']}×{CONFIG['feature_h']} "
        f"(text {'ON' if CONFIG['feature_text_overlay'] else 'off'})")
     if CONFIG["pinterest_pin"]:
-        ok(f"Pinterest pin: [cyan]ON[/] @ {CONFIG['pin_w']}×{CONFIG['pin_h']}")
+        pin_style = CONFIG.get("pin_image_type", "inherit")
+        pin_style_desc = f" (Style: {IMAGE_TYPES.get(pin_style, {}).get('label', pin_style)})" if pin_style != "inherit" else " (Style: Inherit)"
+        ok(f"Pinterest pin: [cyan]ON[/] @ {CONFIG['pin_w']}×{CONFIG['pin_h']}{pin_style_desc}")
+        if CONFIG.get("pin_image_master_prompt"):
+            ok(f"  Pin Master Prompt: [dim italic]{CONFIG['pin_image_master_prompt']}[/]")
     _, _, fmt_label = _get_format_instructions(CONFIG.get("article_format", "paragraphs"))
     ok(f"Article Format: [bold cyan]{fmt_label}[/]")
+    if CONFIG.get("master_text_prompt"):
+        ok(f"Master Text Directive: [dim italic]{CONFIG['master_text_prompt'][:80]}...[/]")
     if CONFIG.get("feature_image_master_prompt"):
         ok(f"Feature Master Prompt: [dim italic]{CONFIG['feature_image_master_prompt']}[/]")
     if CONFIG.get("heading_image_master_prompt"):
@@ -5148,7 +5468,10 @@ def main():
                 b_settings = bundle_data.get("settings", {})
                 for k in ("image_engine", "server_url", "pollinations_delay",
                           "heading_text_overlay", "feature_text_overlay", "pinterest_pin",
-                          "feature_image_master_prompt", "heading_image_master_prompt", "article_format"):
+                          "feature_image_master_prompt", "heading_image_master_prompt",
+                          "pin_image_master_prompt", "pin_image_type", "pin_image_type_custom", "article_format",
+                          "master_text_prompt", "master_image_prompt", "apply_master_to_all_images",
+                          "image_type", "image_type_custom", "skills_enabled"):
                     if k in b_settings:
                         CONFIG[k] = b_settings[k]
                 if "image_format" in b_settings or "image_resolution" in b_settings:

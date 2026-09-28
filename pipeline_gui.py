@@ -100,6 +100,15 @@ DEFAULTS = {
     "pinterest_pin":        False,     # also render + upload a Pinterest pin image
     "feature_image_master_prompt": "", # master prompt addition for feature/hero images
     "heading_image_master_prompt": "", # master prompt addition for section/heading images
+    "pin_image_master_prompt":     "", # master prompt addition for Pinterest pin image
+    "pin_image_type":              "inherit", # style preset for Pinterest pin ("inherit" or key from IMAGE_TYPES)
+    "pin_image_type_custom":       "", # custom style prompt for Pinterest pin when pin_image_type == "custom"
+    "master_image_prompt":        "",  # universal master prompt for all images
+    "apply_master_to_all_images": True,# whether to automatically include master_image_prompt in all images
+    "image_type":                 "photo", # visual style preset
+    "image_type_custom":          "",  # custom style prompt when image_type is custom
+    "master_text_prompt":         "",  # universal master text / content directive
+    "skills_enabled":             [],  # list of enabled skill filenames (empty = all in Skills/)
     "article_format":              "paragraphs", # "paragraphs" | "point_wise" | "subheadings" | "hybrid"
     "display_links": [
         {"title": "", "url": ""},
@@ -120,6 +129,49 @@ ARTICLE_FORMAT_DESCRIPTIONS = {
     "point_wise":  "Concise section intro followed by 4–6 scannable bullet points and actionable takeaways.",
     "subheadings": "Main H2 sections structured into 2–3 H3 sub-headings with focused explanations.",
     "hybrid":      "Rich explanatory paragraphs followed by an actionable key takeaways / bullet list.",
+}
+
+IMAGE_TYPE_LABELS = {
+    "Photorealistic (35mm Documentary)":    "photo",
+    "Cinematic Film Still (70mm)":          "cinematic",
+    "Modern Flat Vector / Illustration":    "vector",
+    "3D Isometric / Clay Render":           "3d_render",
+    "Vintage / Retro 1970s Film":           "vintage",
+    "Commercial Studio / Product Macro":    "studio",
+    "Watercolor & Ink Illustration":        "watercolor",
+    "Custom Style…":                        "custom",
+}
+IMAGE_TYPE_LABELS_REV = {v: k for k, v in IMAGE_TYPE_LABELS.items()}
+IMAGE_TYPE_DESCRIPTIONS = {
+    "photo": "Natural 35mm documentary photography, daylight, realistic textures, sharp focus. Negatives: cartoon, illustration, 3d.",
+    "cinematic": "70mm anamorphic movie still, chiaroscuro lighting, Panavision depth of field. Negatives: snapshot, flat lighting.",
+    "vector": "Editorial flat vector illustration, geometric clean lines, vibrant modern palette. Negatives: photo, photorealistic, 3d.",
+    "3d_render": "Detailed 3D isometric render, Octane soft ambient occlusion, matte clay finish. Negatives: flat 2d, sketch, photo.",
+    "vintage": "1970s Kodachrome film look, warm tones, subtle grain, nostalgic light leaks. Negatives: modern digital CGI, neon.",
+    "studio": "Commercial product macro shot, pristine soft neutral lighting, high-key clean focus. Negatives: outdoor, noisy, messy.",
+    "watercolor": "Expressive watercolor & ink, delicate washes, visible paper texture, fluid strokes. Negatives: photo, 3d render, CGI.",
+    "custom": "Specify your own custom artistic style, descriptors, lighting, and negative prompts below.",
+}
+
+PIN_IMAGE_TYPE_LABELS = {
+    "Inherit Global Style":                 "inherit",
+    "Photorealistic (35mm Documentary)":    "photo",
+    "Cinematic Film Still (70mm)":          "cinematic",
+    "Modern Flat Vector / Illustration":    "vector",
+    "3D Isometric / Clay Render":           "3d_render",
+    "Vintage / Retro 1970s Film":           "vintage",
+    "Commercial Studio / Product Macro":    "studio",
+    "Watercolor & Ink Illustration":        "watercolor",
+    "Custom Style…":                        "custom",
+}
+PIN_IMAGE_TYPE_LABELS_REV = {v: k for k, v in PIN_IMAGE_TYPE_LABELS.items()}
+
+MASTER_TEXT_PRESETS = {
+    "Select a Persona / Style Preset…": "",
+    "Authoritative Tech Journalist": "Write in the voice of an authoritative senior tech journalist. Use precise terminology, objective analysis, data-driven reasoning, clear transitions, and zero fluff.",
+    "Engaging Storyteller & Conversational": "Adopt an engaging, conversational, and charismatic narrative voice. Hook the reader with vivid relatable analogies, thought-provoking questions, and accessible explanations.",
+    "Executive Briefing & Action-Oriented": "Direct, executive-level summary style. Lead with high-impact conclusions, strategic implications, bulleted action items, and concise ROI/efficiency takeaways.",
+    "Educational & Explanatory Guide": "Patient, pedagogical teacher persona. Demystify complex concepts step-by-step with real-world examples, intuitive analogies, and clear summary checkpoints.",
 }
 
 ENGINE_LABELS = {
@@ -1023,17 +1075,35 @@ class ControlPanel(ctk.CTk):
         return f"{w}x{h}"
 
     def _on_pinterest_toggle(self):
-        """Grey out the pin resolution picker when the Pinterest pin feature is off."""
+        """Grey out the pin resolution picker and pin style/master prompt when Pinterest pin is off."""
         enabled = self.pinterest_var.get()
         picker = self.res_pickers.get("pin_resolution")
-        if not picker:
-            return
-        picker["menu"].configure(state="normal" if enabled else "disabled")
-        if enabled:
-            self._on_resolution_change("pin_resolution", picker["menu"].get())
-        else:
-            picker["e_w"].configure(state="disabled")
-            picker["e_h"].configure(state="disabled")
+        if picker:
+            picker["menu"].configure(state="normal" if enabled else "disabled")
+            if enabled:
+                self._on_resolution_change("pin_resolution", picker["menu"].get())
+            else:
+                picker["e_w"].configure(state="disabled")
+                picker["e_h"].configure(state="disabled")
+        state = "normal" if enabled else "disabled"
+        if hasattr(self, "pin_image_type_menu"):
+            self.pin_image_type_menu.configure(state=state)
+        if hasattr(self, "e_pin_master_prompt"):
+            self.e_pin_master_prompt.configure(state=state)
+        if hasattr(self, "e_pin_image_type_custom"):
+            if enabled and hasattr(self, "pin_image_type_menu") and PIN_IMAGE_TYPE_LABELS.get(self.pin_image_type_menu.get()) == "custom":
+                self.e_pin_image_type_custom.configure(state="normal")
+            else:
+                self.e_pin_image_type_custom.configure(state="disabled")
+
+    def _on_pin_image_type_change(self, choice):
+        """Show/hide custom style entry for Pinterest pin."""
+        pin_type_key = PIN_IMAGE_TYPE_LABELS.get(choice, "inherit")
+        if hasattr(self, "pin_custom_style_frame"):
+            if pin_type_key == "custom":
+                self.pin_custom_style_frame.pack(fill="x", pady=(2, 6))
+            else:
+                self.pin_custom_style_frame.pack_forget()
 
     def _on_engine_change(self, choice):
         """Enable/disable Pollinations delay field based on selected image engine."""
@@ -1048,6 +1118,83 @@ class ControlPanel(ctk.CTk):
         desc = ARTICLE_FORMAT_DESCRIPTIONS.get(fmt_key, "")
         if hasattr(self, "lbl_format_desc"):
             self.lbl_format_desc.configure(text=desc)
+
+    def _on_image_type_change(self, choice):
+        """Update style description and toggle custom style entry based on image style."""
+        img_key = IMAGE_TYPE_LABELS.get(choice, "photo")
+        desc = IMAGE_TYPE_DESCRIPTIONS.get(img_key, "")
+        if hasattr(self, "lbl_image_type_desc"):
+            self.lbl_image_type_desc.configure(text=desc)
+        if hasattr(self, "custom_style_frame"):
+            if img_key == "custom":
+                self.custom_style_frame.pack(fill="x", pady=(4, 8))
+            else:
+                self.custom_style_frame.pack_forget()
+
+    def _on_text_preset_change(self, choice):
+        """Populate the master text directive textbox when a preset is chosen."""
+        preset_text = MASTER_TEXT_PRESETS.get(choice, "")
+        if preset_text and hasattr(self, "txt_master_text"):
+            self.txt_master_text.delete("1.0", "end")
+            self.txt_master_text.insert("1.0", preset_text)
+
+    def _open_skills_folder(self):
+        """Open the Skills/ directory in the system file explorer."""
+        skills_dir = Path("Skills").resolve()
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            if sys.platform == "win32":
+                os.startfile(str(skills_dir))
+            else:
+                subprocess.Popen(["xdg-open", str(skills_dir)])
+        except Exception as e:
+            self._log(f"⚠ Could not open Skills folder: {e}\n")
+
+    def _refresh_skills_list(self):
+        """Rescan Skills/ directory for *.md files and build checkboxes."""
+        if not hasattr(self, "skills_list_frame"):
+            return
+        for child in self.skills_list_frame.winfo_children():
+            child.destroy()
+
+        skills_dir = Path("Skills")
+        if not skills_dir.exists():
+            skills_dir.mkdir(parents=True, exist_ok=True)
+
+        found_files = sorted(skills_dir.glob("*.md"))
+        saved_enabled = self.cfg.get("skills_enabled", [])
+
+        if not hasattr(self, "skill_vars"):
+            self.skill_vars = {}
+
+        SKILL_DESCRIPTIONS = {
+            "seo_skill.md": "Search Engine Optimization (Keyword density, NLP terms, H2/H3 formatting)",
+            "geo_skill.md": "Generative Engine Optimization (Inverted pyramid, AI citations, LLM query anchors)",
+            "aeo_skill.md": "Answer Engine Optimization (Direct snippet answers, 40-60 word summaries, voice search)",
+        }
+
+        if not found_files:
+            ctk.CTkLabel(self.skills_list_frame, text="No .md skill files found in Skills/ directory.",
+                         text_color=COLORS["amber"]).pack(anchor="w", padx=8, pady=6)
+            return
+
+        for p in found_files:
+            fname = p.name
+            if fname not in self.skill_vars:
+                val = (not saved_enabled) or (fname in saved_enabled)
+                self.skill_vars[fname] = tk.BooleanVar(value=val)
+
+            row = ctk.CTkFrame(self.skills_list_frame, fg_color=COLORS["bg_alt"], corner_radius=8,
+                               border_width=1, border_color=COLORS["border"])
+            row.pack(fill="x", pady=3, padx=2)
+
+            cb = ctk.CTkCheckBox(row, text=fname, variable=self.skill_vars[fname],
+                                 font=ctk.CTkFont(size=12, weight="bold"))
+            cb.pack(side="left", padx=10, pady=8)
+
+            desc = SKILL_DESCRIPTIONS.get(fname, "Custom user markdown skill")
+            ctk.CTkLabel(row, text=f"—  {desc}", text_color=COLORS["text_mute"],
+                         font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 10), pady=8)
 
     # ── DASHBOARD ─────────────────────────────────────────────
     def _build_dashboard(self, page):
@@ -1601,6 +1748,46 @@ class ControlPanel(ctk.CTk):
         self.lbl_format_desc.pack(fill="x", pady=(0, 4))
         self._on_format_structure_change(self.format_structure_menu.get())
 
+        # Master Content & Text Directive
+        text_card = self._card(s, "✍️", "Master Content & Text Directive", "Universal guidelines, author persona, brand voice, and formatting directives")
+        ctk.CTkLabel(text_card, text="Persona / Voice Preset", anchor="w", text_color=COLORS["text_dim"]).pack(fill="x")
+        self.text_preset_menu = ctk.CTkOptionMenu(text_card, values=list(MASTER_TEXT_PRESETS.keys()),
+                                                 command=lambda choice: self._on_text_preset_change(choice))
+        self.text_preset_menu.set("Select a Persona / Style Preset…")
+        self.text_preset_menu.pack(fill="x", pady=(2, 6))
+
+        ctk.CTkLabel(text_card, text="Master Directive Prompt (Appended to Article & Section Rewrites)",
+                     anchor="w", text_color=COLORS["text_dim"]).pack(fill="x", pady=(4, 0))
+        self.txt_master_text = ctk.CTkTextbox(text_card, height=80, fg_color=COLORS["bg_alt"],
+                                              border_width=1, border_color=COLORS["border"],
+                                              text_color=COLORS["text"], font=ctk.CTkFont(size=12))
+        self.txt_master_text.pack(fill="x", pady=(2, 4))
+        if self.cfg.get("master_text_prompt"):
+            self.txt_master_text.insert("1.0", self.cfg["master_text_prompt"])
+        ctk.CTkLabel(text_card, text="Injected into all LLM rewrite stages (article overhaul, individual section rewrites, conclusion). Set brand guidelines, persona, tone of voice, or formatting constraints here.",
+                     anchor="w", text_color=COLORS["text_mute"], font=ctk.CTkFont(size=10), wraplength=520).pack(fill="x", pady=(0, 2))
+
+        # AI Skills Engine (SEO / GEO / AEO)
+        skills_card = self._card(s, "🧠", "AI Skills Engine (SEO / GEO / AEO)", "Modular markdown skill files automatically loaded and merged into LLM instructions")
+        skills_top = ctk.CTkFrame(skills_card, fg_color="transparent")
+        skills_top.pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(skills_top, text="Detected Skill Files in Skills/ Folder", anchor="w",
+                     text_color=COLORS["text_dim"], font=ctk.CTkFont(size=12, weight="bold")).pack(side="left")
+
+        ctk.CTkButton(skills_top, text="🔄 Refresh", width=75, height=26, fg_color=COLORS["slate"],
+                      hover_color=COLORS["slate_hover"], font=ctk.CTkFont(size=11),
+                      command=self._refresh_skills_list).pack(side="right", padx=(6, 0))
+        ctk.CTkButton(skills_top, text="📂 Open Folder", width=95, height=26, fg_color=COLORS["accent"],
+                      hover_color=COLORS["accent_hover"], font=ctk.CTkFont(size=11),
+                      command=self._open_skills_folder).pack(side="right")
+
+        self.skills_list_frame = ctk.CTkFrame(skills_card, fg_color="transparent")
+        self.skills_list_frame.pack(fill="x", pady=(2, 6))
+        self._refresh_skills_list()
+
+        ctk.CTkLabel(skills_card, text="Checked skills are compiled into every AI rewrite prompt with '# === SKILL: <name> ===' headers. Drop any custom .md skill file into the Skills/ folder anytime!",
+                     anchor="w", text_color=COLORS["text_mute"], font=ctk.CTkFont(size=10), wraplength=520).pack(fill="x", pady=(0, 2))
+
         # Images — format (shared) + independent settings per image type
         img = self._card(s, "🖼", "Images", "AI provider engine, format, and separate resolution/text-overlay controls per image type")
 
@@ -1627,6 +1814,46 @@ class ControlPanel(ctk.CTk):
         self.format_menu.set(FORMAT_LABELS_REV.get(self.cfg.get("image_format", "webp"),
                                                     "WebP (smaller files)"))
         self.format_menu.pack(fill="x", pady=(2, 12))
+
+        # Image Visual Style & Universal Master Prompt
+        style_card = self._card(s, "🎨", "Visual Style & Master Image Prompt", "Artistic style preset and universal master prompt applied across all generated images")
+        ctk.CTkLabel(style_card, text="Image Art Style Preset", anchor="w", text_color=COLORS["text_dim"]).pack(fill="x")
+        self.image_type_menu = ctk.CTkOptionMenu(style_card, values=list(IMAGE_TYPE_LABELS.keys()),
+                                                 command=lambda choice: self._on_image_type_change(choice))
+        self.image_type_menu.set(IMAGE_TYPE_LABELS_REV.get(self.cfg.get("image_type", "photo"),
+                                                           "Photorealistic (35mm Documentary)"))
+        self.image_type_menu.pack(fill="x", pady=(2, 4))
+
+        self.lbl_image_type_desc = ctk.CTkLabel(style_card, text="", anchor="w", justify="left",
+                                               text_color=COLORS["text_mute"], font=ctk.CTkFont(size=11),
+                                               wraplength=520)
+        self.lbl_image_type_desc.pack(fill="x", pady=(0, 6))
+
+        self.custom_style_frame = ctk.CTkFrame(style_card, fg_color="transparent")
+        ctk.CTkLabel(self.custom_style_frame, text="Custom Style Descriptors & Negative Prompt",
+                     anchor="w", text_color=COLORS["text_dim"]).pack(fill="x")
+        self.e_image_type_custom = ctk.CTkEntry(self.custom_style_frame, height=36,
+                                                placeholder_text="e.g. oil on canvas, impasto brushstrokes, golden hour | Negative: photo, digital CGI",
+                                                fg_color=COLORS["bg_alt"], border_color=COLORS["border"])
+        self.e_image_type_custom.pack(fill="x", pady=(2, 4))
+        if self.cfg.get("image_type_custom"):
+            self.e_image_type_custom.insert(0, self.cfg["image_type_custom"])
+
+        self._on_image_type_change(self.image_type_menu.get())
+
+        ctk.CTkLabel(style_card, text="Universal Master Image Prompt", anchor="w", text_color=COLORS["text_dim"]).pack(fill="x", pady=(8, 0))
+        self.e_master_image_prompt = ctk.CTkEntry(style_card, height=36,
+                                                 placeholder_text="e.g. 8k resolution, award-winning photography, cinematic lighting, ultra-detailed",
+                                                 fg_color=COLORS["bg_alt"], border_color=COLORS["border"])
+        self.e_master_image_prompt.pack(fill="x", pady=(2, 4))
+        if self.cfg.get("master_image_prompt"):
+            self.e_master_image_prompt.insert(0, self.cfg["master_image_prompt"])
+
+        self.apply_master_all_var = tk.BooleanVar(value=bool(self.cfg.get("apply_master_to_all_images", True)))
+        ctk.CTkCheckBox(style_card, text="Include Master Image Prompt in all images (Feature, Heading, and Pin images)",
+                        variable=self.apply_master_all_var).pack(fill="x", pady=(2, 4))
+        ctk.CTkLabel(style_card, text="When enabled, this prompt is automatically combined with the visual style preset for every generated image.",
+                     anchor="w", text_color=COLORS["text_mute"], font=ctk.CTkFont(size=10)).pack(fill="x", pady=(0, 2))
 
         # Heading (section) images
         head_img = self._card(s, "📝", "Heading Images", "The per-section images inside the article")
@@ -1674,6 +1901,36 @@ class ControlPanel(ctk.CTk):
         self.pin_res_frame.pack(fill="x")
         self._resolution_picker(self.pin_res_frame, "Pin resolution (tall, e.g. 1000×1500)",
                                 "pin_resolution", default_wh=("1000", "1500"))
+
+        ctk.CTkLabel(self.pin_res_frame, text="Pinterest Pin Art Style Preset", anchor="w", text_color=COLORS["text_dim"]).pack(fill="x", pady=(6, 0))
+        self.pin_image_type_menu = ctk.CTkOptionMenu(self.pin_res_frame, values=list(PIN_IMAGE_TYPE_LABELS.keys()),
+                                                     command=lambda choice: self._on_pin_image_type_change(choice))
+        self.pin_image_type_menu.set(PIN_IMAGE_TYPE_LABELS_REV.get(self.cfg.get("pin_image_type", "inherit"), "Inherit Global Style"))
+        self.pin_image_type_menu.pack(fill="x", pady=(2, 4))
+
+        self.pin_custom_style_frame = ctk.CTkFrame(self.pin_res_frame, fg_color="transparent")
+        ctk.CTkLabel(self.pin_custom_style_frame, text="Custom Style Descriptors & Negative Prompt for Pin",
+                     anchor="w", text_color=COLORS["text_dim"]).pack(fill="x")
+        self.e_pin_image_type_custom = ctk.CTkEntry(self.pin_custom_style_frame, height=36,
+                                                    placeholder_text="e.g. bold graphic illustration, pastel tones | Negative: photo, realism",
+                                                    fg_color=COLORS["bg_alt"], border_color=COLORS["border"])
+        self.e_pin_image_type_custom.pack(fill="x", pady=(2, 4))
+        if self.cfg.get("pin_image_type_custom"):
+            self.e_pin_image_type_custom.insert(0, self.cfg["pin_image_type_custom"])
+
+        self._on_pin_image_type_change(self.pin_image_type_menu.get())
+
+        ctk.CTkLabel(self.pin_res_frame, text="Master Prompt Addition (Style / Quality / Layout)",
+                     anchor="w", text_color=COLORS["text_dim"]).pack(fill="x", pady=(6, 0))
+        self.e_pin_master_prompt = ctk.CTkEntry(self.pin_res_frame, height=36,
+                                                placeholder_text="e.g. 8k UHD, viral Pinterest pin aesthetic, vibrant colors, clean layout space",
+                                                fg_color=COLORS["bg_alt"], border_color=COLORS["border"])
+        self.e_pin_master_prompt.pack(fill="x", pady=(2, 2))
+        if self.cfg.get("pin_image_master_prompt"):
+            self.e_pin_master_prompt.insert(0, self.cfg["pin_image_master_prompt"])
+        ctk.CTkLabel(self.pin_res_frame, text="Appended specifically to the Pinterest pin AI prompt.",
+                     anchor="w", text_color=COLORS["text_mute"], font=ctk.CTkFont(size=10)).pack(fill="x", pady=(0, 2))
+
         self._on_pinterest_toggle()
 
         # Display Links (Dashboard Shortcuts — max 3 links)
@@ -1910,8 +2167,17 @@ class ControlPanel(ctk.CTk):
             "heading_text_overlay": bool(self.heading_text_var.get()),
             "feature_text_overlay": bool(self.feature_text_var.get()),
             "pinterest_pin":        bool(self.pinterest_var.get()),
+            "pin_image_master_prompt": self.e_pin_master_prompt.get().strip() if hasattr(self, "e_pin_master_prompt") else self.cfg.get("pin_image_master_prompt", ""),
+            "pin_image_type":          PIN_IMAGE_TYPE_LABELS.get(self.pin_image_type_menu.get(), "inherit") if hasattr(self, "pin_image_type_menu") else self.cfg.get("pin_image_type", "inherit"),
+            "pin_image_type_custom":   self.e_pin_image_type_custom.get().strip() if hasattr(self, "e_pin_image_type_custom") else self.cfg.get("pin_image_type_custom", ""),
             "feature_image_master_prompt": self.e_feat_master_prompt.get().strip() if hasattr(self, "e_feat_master_prompt") else self.cfg.get("feature_image_master_prompt", ""),
             "heading_image_master_prompt": self.e_head_master_prompt.get().strip() if hasattr(self, "e_head_master_prompt") else self.cfg.get("heading_image_master_prompt", ""),
+            "master_image_prompt":        self.e_master_image_prompt.get().strip() if hasattr(self, "e_master_image_prompt") else self.cfg.get("master_image_prompt", ""),
+            "apply_master_to_all_images": bool(self.apply_master_all_var.get()) if hasattr(self, "apply_master_all_var") else bool(self.cfg.get("apply_master_to_all_images", True)),
+            "image_type":                 IMAGE_TYPE_LABELS.get(self.image_type_menu.get(), "photo") if hasattr(self, "image_type_menu") else self.cfg.get("image_type", "photo"),
+            "image_type_custom":          self.e_image_type_custom.get().strip() if hasattr(self, "e_image_type_custom") else self.cfg.get("image_type_custom", ""),
+            "master_text_prompt":         self.txt_master_text.get("1.0", "end").strip() if hasattr(self, "txt_master_text") else self.cfg.get("master_text_prompt", ""),
+            "skills_enabled":             [fname for fname, var in self.skill_vars.items() if var.get()] if hasattr(self, "skill_vars") else self.cfg.get("skills_enabled", []),
             "article_format":              ARTICLE_FORMAT_LABELS.get(self.format_structure_menu.get(), "paragraphs") if hasattr(self, "format_structure_menu") else self.cfg.get("article_format", "paragraphs"),
             "display_links":        dlinks,
         }
@@ -1930,6 +2196,13 @@ class ControlPanel(ctk.CTk):
         if hasattr(self, "format_structure_menu"):
             self.format_structure_menu.set(ARTICLE_FORMAT_LABELS_REV.get(cfg.get("article_format", "paragraphs"), "Standard Paragraphs (Narrative)"))
             self._on_format_structure_change(self.format_structure_menu.get())
+        if hasattr(self, "txt_master_text"):
+            self.txt_master_text.delete("1.0", "end")
+            self.txt_master_text.insert("1.0", cfg.get("master_text_prompt", ""))
+        if hasattr(self, "skill_vars"):
+            enabled = cfg.get("skills_enabled", [])
+            for fname, var in self.skill_vars.items():
+                var.set((not enabled) or (fname in enabled))
         if hasattr(self, "engine_menu"):
             self.engine_menu.set(ENGINE_LABELS_REV.get(cfg.get("image_engine", "agy_fallback"),
                                                        "Antigravity (with Pollinations Fallback)"))
@@ -1938,6 +2211,17 @@ class ControlPanel(ctk.CTk):
             self.e_pol_delay.insert(0, str(cfg.get("pollinations_delay", 180)))
             self._on_engine_change(self.engine_menu.get())
         self.format_menu.set(FORMAT_LABELS_REV.get(cfg.get("image_format", "webp"), "WebP (smaller files)"))
+        if hasattr(self, "image_type_menu"):
+            self.image_type_menu.set(IMAGE_TYPE_LABELS_REV.get(cfg.get("image_type", "photo"), "Photorealistic (35mm Documentary)"))
+            self._on_image_type_change(self.image_type_menu.get())
+        if hasattr(self, "e_image_type_custom"):
+            self.e_image_type_custom.delete(0, "end")
+            self.e_image_type_custom.insert(0, cfg.get("image_type_custom", ""))
+        if hasattr(self, "e_master_image_prompt"):
+            self.e_master_image_prompt.delete(0, "end")
+            self.e_master_image_prompt.insert(0, cfg.get("master_image_prompt", ""))
+        if hasattr(self, "apply_master_all_var"):
+            self.apply_master_all_var.set(bool(cfg.get("apply_master_to_all_images", True)))
         self.fresh_var.set(bool(cfg.get("fresh", False)))
         self.heading_text_var.set(bool(cfg.get("heading_text_overlay", True)))
         self.feature_text_var.set(bool(cfg.get("feature_text_overlay", False)))
@@ -1948,6 +2232,15 @@ class ControlPanel(ctk.CTk):
             self.e_feat_master_prompt.delete(0, "end")
             self.e_feat_master_prompt.insert(0, cfg.get("feature_image_master_prompt", ""))
         self.pinterest_var.set(bool(cfg.get("pinterest_pin", False)))
+        if hasattr(self, "pin_image_type_menu"):
+            self.pin_image_type_menu.set(PIN_IMAGE_TYPE_LABELS_REV.get(cfg.get("pin_image_type", "inherit"), "Inherit Global Style"))
+            self._on_pin_image_type_change(self.pin_image_type_menu.get())
+        if hasattr(self, "e_pin_image_type_custom"):
+            self.e_pin_image_type_custom.delete(0, "end")
+            self.e_pin_image_type_custom.insert(0, cfg.get("pin_image_type_custom", ""))
+        if hasattr(self, "e_pin_master_prompt"):
+            self.e_pin_master_prompt.delete(0, "end")
+            self.e_pin_master_prompt.insert(0, cfg.get("pin_image_master_prompt", ""))
         self._apply_resolution("image_resolution", cfg.get("image_resolution", "hd"))
         self._apply_resolution("feature_resolution", cfg.get("feature_resolution", "hd"))
         self._apply_resolution("pin_resolution", cfg.get("pin_resolution", "1000x1500"),
@@ -2183,6 +2476,29 @@ class ControlPanel(ctk.CTk):
         ]
         if server_url:
             args.extend(["--server-url", server_url])
+        img_type_val = IMAGE_TYPE_LABELS.get(self.image_type_menu.get(), "photo") if hasattr(self, "image_type_menu") else self.cfg.get("image_type", "photo")
+        args.extend(["--image-type", img_type_val])
+        if img_type_val == "custom":
+            custom_type_val = self.e_image_type_custom.get().strip() if hasattr(self, "e_image_type_custom") else self.cfg.get("image_type_custom", "")
+            if custom_type_val:
+                args.extend(["--custom-image-type", custom_type_val])
+        master_img = self.e_master_image_prompt.get().strip() if hasattr(self, "e_master_image_prompt") else self.cfg.get("master_image_prompt", "")
+        if master_img:
+            args.extend(["--master-image-prompt", master_img])
+        if hasattr(self, "apply_master_all_var"):
+            if self.apply_master_all_var.get():
+                args.append("--apply-master-to-all")
+            else:
+                args.append("--no-apply-master-to-all")
+        master_txt = self.txt_master_text.get("1.0", "end").strip() if hasattr(self, "txt_master_text") else self.cfg.get("master_text_prompt", "")
+        if master_txt:
+            args.extend(["--master-text-prompt", master_txt])
+        if hasattr(self, "skill_vars"):
+            enabled_skills = [fname for fname, var in self.skill_vars.items() if var.get()]
+            if enabled_skills:
+                args.extend(["--skills", ",".join(enabled_skills)])
+        elif self.cfg.get("skills_enabled"):
+            args.extend(["--skills", ",".join(self.cfg["skills_enabled"])])
         feat_master = self.e_feat_master_prompt.get().strip() if hasattr(self, "e_feat_master_prompt") else self.cfg.get("feature_image_master_prompt", "")
         if feat_master:
             args.extend(["--feature-master-prompt", feat_master])
@@ -2197,6 +2513,16 @@ class ControlPanel(ctk.CTk):
             args.append("--no-heading-text")
         if self.pinterest_var.get():
             args.append("--pinterest-pin")
+            pin_master = self.e_pin_master_prompt.get().strip() if hasattr(self, "e_pin_master_prompt") else self.cfg.get("pin_image_master_prompt", "")
+            if pin_master:
+                args.extend(["--pin-master-prompt", pin_master])
+            pin_type_val = PIN_IMAGE_TYPE_LABELS.get(self.pin_image_type_menu.get(), "inherit") if hasattr(self, "pin_image_type_menu") else self.cfg.get("pin_image_type", "inherit")
+            if pin_type_val and pin_type_val != "inherit":
+                args.extend(["--pin-image-type", pin_type_val])
+                if pin_type_val == "custom":
+                    custom_pin_val = self.e_pin_image_type_custom.get().strip() if hasattr(self, "e_pin_image_type_custom") else self.cfg.get("pin_image_type_custom", "")
+                    if custom_pin_val:
+                        args.extend(["--custom-pin-image-type", custom_pin_val])
 
         if getattr(self, "run_mode", "offline") == "offline":
             b_path = getattr(self, "offline_bundle_path", "offline_bundle.json")

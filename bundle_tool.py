@@ -117,10 +117,22 @@ def inspect_bundle(bundle_path: Path):
     print(f"  Resolutions:      Heading: {settings.get('image_resolution', 'hd')} | Feature: {settings.get('feature_resolution', 'hd')}")
     print(f"  Text Overlays:    Heading: {settings.get('heading_text_overlay', False)} | Feature: {settings.get('feature_text_overlay', False)}")
     print(f"  Article Format:   {settings.get('article_format', 'paragraphs')}")
+    print(f"  Image Style:      {settings.get('image_type', 'photo')}" + (f" ({settings.get('image_type_custom')})" if settings.get('image_type') == 'custom' and settings.get('image_type_custom') else ""))
+    if settings.get("master_image_prompt"):
+        print(f"  Master Image:     {settings.get('master_image_prompt')} (All images: {settings.get('apply_master_to_all_images', True)})")
     if settings.get("feature_image_master_prompt"):
         print(f"  Feature Master:   {settings.get('feature_image_master_prompt')}")
     if settings.get("heading_image_master_prompt"):
         print(f"  Heading Master:   {settings.get('heading_image_master_prompt')}")
+    if settings.get("pinterest_pin"):
+        pin_style = settings.get("pin_image_type", "inherit")
+        print(f"  Pinterest Pin:    ON @ {settings.get('pin_resolution', '1000x1500')} (Style: {pin_style})")
+        if settings.get("pin_image_master_prompt"):
+            print(f"  Pin Master:       {settings.get('pin_image_master_prompt')}")
+    if settings.get("master_text_prompt"):
+        print(f"  Master Text:      {settings.get('master_text_prompt')[:60]}...")
+    if settings.get("skills_enabled"):
+        print(f"  Enabled Skills:   {', '.join(settings.get('skills_enabled'))}")
     print("-" * 65)
     print("📊 URL Statistics:")
     print(f"  Total URLs:       {total}")
