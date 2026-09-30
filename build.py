@@ -28,6 +28,12 @@ if sys.platform != "win32":
     print("build.py only produces Windows .exe files — run it on Windows.")
     sys.exit(1)
 
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 ROOT     = Path(__file__).parent.resolve()
 OUT      = ROOT / os.environ.get("BUILD_OUTPUT_DIR", "build_output")
 APP_DIR  = OUT / "ContentPipeline"
@@ -85,7 +91,7 @@ def _winpty_binary_args() -> list:
     except (ImportError, ValueError):
         spec = None
     if not spec or not spec.origin:
-        print("  ⚠  winpty package not found — agy calls will likely fail in the frozen exe.")
+        print("  [!]  winpty package not found — agy calls will likely fail in the frozen exe.")
         return []
     pkg_dir = Path(spec.origin).parent
     args = []
@@ -94,60 +100,71 @@ def _winpty_binary_args() -> list:
         if src.exists():
             args += ["--add-binary", f"{src}{os.pathsep}winpty"]
         else:
-            print(f"  ⚠  {src} not found — agy calls will likely fail in the frozen exe.")
+            print(f"  [!]  {src} not found — agy calls will likely fail in the frozen exe.")
     return args
 
 
-def build_app():
-    if APP_DIR.exists():
+def build_app(force: bool = False):
+    if force and APP_DIR.exists():
         shutil.rmtree(APP_DIR)
     APP_DIR.mkdir(parents=True, exist_ok=True)
 
     _assert_no_service_account_keys()
 
     # 1) automation.exe — the pipeline itself (kept console: rich UI + prompts)
-    # --collect-all newspaper/nltk sweeps in unrelated ML packages that happen to be
-    # installed in this dev environment (torch, tensorflow, transformers, sklearn,
-    # cupy, numba, ...). The app never calls Article.nlp() or imports any of them —
-    # only .download()/.parse() (HTML fetch + lxml extraction) — so they're dead
-    # weight that bloats the exe past GitHub's release size limit. Exclude them.
-    _pyinstaller(ROOT / "automation.py", "automation", windowed=False, distpath=APP_DIR,
-                extra=["--collect-all", "newspaper", "--collect-all", "nltk",
-                       "--exclude-module", "torch",
-                       "--exclude-module", "torchvision",
-                       "--exclude-module", "torchaudio",
-                       "--exclude-module", "tensorflow",
-                       "--exclude-module", "tensorboard",
-                       "--exclude-module", "transformers",
-                       "--exclude-module", "sklearn",
-                       "--exclude-module", "scipy",
-                       "--exclude-module", "pandas",
-                       "--exclude-module", "matplotlib",
-                       "--exclude-module", "sympy",
-                       "--exclude-module", "huggingface_hub",
-                       "--exclude-module", "IPython",
-                       "--exclude-module", "jieba",
-                       "--exclude-module", "cupy",
-                       "--exclude-module", "cupyx",
-                       "--exclude-module", "cupy_backends",
-                       "--exclude-module", "numba",
-                       "--exclude-module", "llvmlite",
-                       "--exclude-module", "nvidia",
-                       "--exclude-module", "triton",
-                       "--exclude-module", "graphviz",
-                       "--exclude-module", "lief"] + _winpty_binary_args())
+    auto_exe = APP_DIR / "automation.exe"
+    if force or not auto_exe.exists():
+        _pyinstaller(ROOT / "automation.py", "automation", windowed=False, distpath=APP_DIR,
+                    extra=["--collect-all", "newspaper", "--collect-all", "nltk",
+                           "--exclude-module", "torch",
+                           "--exclude-module", "torchvision",
+                           "--exclude-module", "torchaudio",
+                           "--exclude-module", "tensorflow",
+                           "--exclude-module", "tensorboard",
+                           "--exclude-module", "transformers",
+                           "--exclude-module", "sklearn",
+                           "--exclude-module", "scipy",
+                           "--exclude-module", "pandas",
+                           "--exclude-module", "matplotlib",
+                           "--exclude-module", "sympy",
+                           "--exclude-module", "huggingface_hub",
+                           "--exclude-module", "IPython",
+                           "--exclude-module", "jieba",
+                           "--exclude-module", "cupy",
+                           "--exclude-module", "cupyx",
+                           "--exclude-module", "cupy_backends",
+                           "--exclude-module", "numba",
+                           "--exclude-module", "llvmlite",
+                           "--exclude-module", "nvidia",
+                           "--exclude-module", "triton",
+                           "--exclude-module", "graphviz",
+                           "--exclude-module", "lief"] + _winpty_binary_args())
+    else:
+        print(f"Using existing {auto_exe.name}")
 
     # 2) wordpress_publisher.exe — standalone publisher / connection test
-    _pyinstaller(ROOT / "wordpress_publisher.py", "wordpress_publisher",
-                windowed=False, distpath=APP_DIR)
+    wp_exe = APP_DIR / "wordpress_publisher.exe"
+    if force or not wp_exe.exists():
+        _pyinstaller(ROOT / "wordpress_publisher.py", "wordpress_publisher",
+                    windowed=False, distpath=APP_DIR)
+    else:
+        print(f"Using existing {wp_exe.name}")
 
     # 3) ContentPipeline.exe — the control panel (no console window)
-    _pyinstaller(ROOT / "pipeline_gui.py", "ContentPipeline", windowed=True, distpath=APP_DIR,
-                extra=["--collect-all", "customtkinter"])
+    gui_exe = APP_DIR / "ContentPipeline.exe"
+    if force or not gui_exe.exists():
+        _pyinstaller(ROOT / "pipeline_gui.py", "ContentPipeline", windowed=True, distpath=APP_DIR,
+                    extra=["--collect-all", "customtkinter"])
+    else:
+        print(f"Using existing {gui_exe.name}")
 
     # 4) bundle_tool.exe — standalone offline bundle creator & manager
-    _pyinstaller(ROOT / "bundle_tool.py", "bundle_tool",
-                windowed=False, distpath=APP_DIR)
+    bt_exe = APP_DIR / "bundle_tool.exe"
+    if force or not bt_exe.exists():
+        _pyinstaller(ROOT / "bundle_tool.py", "bundle_tool",
+                    windowed=False, distpath=APP_DIR)
+    else:
+        print(f"Using existing {bt_exe.name}")
 
     # Support files the running app expects to find next to it. firebase_config.json
     # (public web config — see firebase_config.example.json for why this isn't
@@ -157,7 +174,7 @@ def build_app():
         src = ROOT / name
         if not src.exists():
             if name == "firebase_config.json":
-                print(f"  ⚠  {name} not found — sign-in won't work in this build. "
+                print(f"  [!]  {name} not found — sign-in won't work in this build. "
                       f"See firebase_config.example.json / README.md.")
             continue
         dst = APP_DIR / name
@@ -191,7 +208,7 @@ def _assert_no_service_account_keys():
             suspects.append(path)
     if suspects:
         names = ", ".join(p.name for p in suspects)
-        print(f"\n✗ Refusing to build: found what looks like a service-account "
+        print(f"\n[x] Refusing to build: found what looks like a service-account "
               f"key ({names}) in {ROOT}. This must never be bundled into the "
               f"app — delete or move it out of this folder and rebuild.")
         sys.exit(1)
