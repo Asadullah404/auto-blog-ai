@@ -3567,6 +3567,11 @@ IMAGE_TYPES = {
         "prompt": "expressive watercolor and ink illustration, delicate pigment washes, visible paper texture, fluid artistic brushstrokes, vibrant tones, handcrafted art",
         "negative": "photo, photorealistic, 3d render, plastic, digital CGI",
     },
+    "infographic_planner": {
+        "label": "Action Planner & Checklist Infographic",
+        "prompt": "clean modern Pinterest infographic layout, action planner and visual checklist aesthetic, organized step-by-step planning cards, clean modern typography-friendly composition, elegant visual hierarchy, crisp graphic design, high-converting vertical pin visual",
+        "negative": "messy clutter, chaotic illegible artifacts, low resolution, blurry, dark, grim, deformed",
+    },
     "custom": {
         "label": "Custom Style",
         "prompt": "",
@@ -3637,7 +3642,8 @@ def _resolve_image_prompt(scene: str, image_role: str = "section") -> str:
             parts.append(type_style)
 
     combined = ", ".join(p.strip().rstrip(".,; ") for p in parts if p.strip())
-    if "no text" not in combined.lower():
+    has_text_instruction = bool(re.search(r'\b(text|typography|title|heading|lettering|badge|quote|checklist|infographic)\b', combined, re.IGNORECASE))
+    if "no text" not in combined.lower() and not (image_role == "pin" and has_text_instruction):
         combined += ", no text, no watermark"
     return combined
 
@@ -4027,7 +4033,7 @@ def _get_format_instructions(fmt: str = None) -> tuple:
     return rules, example, label
 
 def _get_image_style_guidance() -> tuple:
-    """Returns style prompt hints for feature and heading images if configured."""
+    """Returns style prompt hints for feature, heading, and Pinterest pin images if configured."""
     img_type_key = CONFIG.get("image_type", "photo")
     type_style = ""
     if img_type_key == "custom":
@@ -4052,7 +4058,22 @@ def _get_image_style_guidance() -> tuple:
     if head_master: head_parts.append(head_master)
     head_hint = ", ".join(head_parts)
 
-    return feat_hint, head_hint
+    pin_type = CONFIG.get("pin_image_type", "inherit")
+    pin_style = type_style
+    if pin_type and pin_type != "inherit":
+        if pin_type == "custom":
+            pin_style = CONFIG.get("pin_image_type_custom", "").strip()
+        elif pin_type in IMAGE_TYPES:
+            pin_style = IMAGE_TYPES[pin_type]["prompt"]
+
+    pin_master = CONFIG.get("pin_image_master_prompt", "").strip()
+    pin_parts = ["tall vertical Pinterest pin scene, action planner, checklist or visual guide"]
+    if pin_style: pin_parts.append(f"visual style: {pin_style}")
+    if master_img and apply_all: pin_parts.append(master_img)
+    if pin_master: pin_parts.append(pin_master)
+    pin_hint = ", ".join(pin_parts)
+
+    return feat_hint, head_hint, pin_hint
 
 AGY_REWRITE_PROMPT = """\
 {seo_skill}
@@ -4084,6 +4105,7 @@ JSON schema:
   "category": "Category",
   "intro": "article opener",
   "feature_image_prompt": "{feature_img_hint}",
+  "pin_image_prompt": "{pin_img_hint}",
   "sections": [
     {{"heading":"H2","paragraphs":{paragraphs_example},"image_prompt":"{sec_img_hint}","image_alt":"alt","snippet":"answer"}}
   ],
@@ -4163,12 +4185,14 @@ def phase_transform(extracted, url, db, seo_skill, category_override: str = ""):
     sections = extracted["sections"]   # ALL sections — no cap
 
     format_rules, paragraphs_example, format_label = _get_format_instructions(CONFIG.get("article_format", "paragraphs"))
-    feat_hint, head_hint = _get_image_style_guidance()
+    feat_hint, head_hint, pin_hint = _get_image_style_guidance()
     inf(f"Article Format: [bold cyan]{format_label}[/]")
     if CONFIG.get("feature_image_master_prompt"):
         inf(f"Feature Master Prompt: [dim italic]{CONFIG['feature_image_master_prompt']}[/]")
     if CONFIG.get("heading_image_master_prompt"):
         inf(f"Heading Master Prompt: [dim italic]{CONFIG['heading_image_master_prompt']}[/]")
+    if CONFIG.get("pin_image_master_prompt"):
+        inf(f"Pin Master Prompt:     [dim italic]{CONFIG['pin_image_master_prompt']}[/]")
 
     BATCH   = CONFIG["batch_size"]
     batches = [sections[i:i+BATCH] for i in range(0, len(sections), BATCH)]
@@ -4193,6 +4217,7 @@ def phase_transform(extracted, url, db, seo_skill, category_override: str = ""):
                 title=title, sections_block=_build_sections_block(batches[0]),
                 format_rules=format_rules, master_text_directive=_get_master_text_directive(),
                 feature_img_hint=feat_hint,
+                pin_img_hint=pin_hint,
                 sec_img_hint=head_hint, paragraphs_example=paragraphs_example),
                 CONFIG["agy_timeout"])
             base = _parse_json(raw, len(batches[0]))
@@ -4200,7 +4225,9 @@ def phase_transform(extracted, url, db, seo_skill, category_override: str = ""):
             warn(f"First batch notice ({escape(str(e))}) — recovering ...")
             base = {"title":title,"meta_description":f"Complete guide on {title}",
                     "keywords":title,"category":"Guide","intro":f"Welcome to our guide on {title}.",
-                    "feature_image_prompt":title,"sections":[],"conclusion":None}
+                    "feature_image_prompt":title,
+                    "pin_image_prompt":f"Action planner, visual checklist and step-by-step roadmap for {title}",
+                    "sections":[],"conclusion":None}
             for s in batches[0]:
                 base["sections"].append(_rewrite_single_section(s, title, seo_skill))
 
@@ -4265,6 +4292,7 @@ def phase_transform(extracted, url, db, seo_skill, category_override: str = ""):
         "category":             category_override or meta.get("category", "Article"),
         "intro":                meta.get("intro", ""),
         "feature_image_prompt": meta.get("feature_image_prompt", title),
+        "pin_image_prompt":     meta.get("pin_image_prompt", ""),
         "sections":             all_sections,
         "conclusion":           conclusion,
     }
@@ -4293,6 +4321,15 @@ AGY_IMG_PROMPT_TEMPLATE = (
     "Scene description:\n{scene}\n\n"
     "Requirements: ultra-photorealistic, cinematic lighting, sharp focus, "
     "professional photography quality, 16:9 landscape orientation, no text or watermarks."
+)
+
+AGY_PIN_IMG_PROMPT_TEMPLATE = (
+    "Generate an image and save it to this EXACT absolute file "
+    "path — create the file at exactly this location, do not choose a "
+    "different filename or folder:\n{path}\n\n"
+    "Scene & Pinterest Pin Visual Directive:\n{scene}\n\n"
+    "Requirements: tall vertical Pinterest pin orientation (2:3 aspect ratio, 1000x1500), "
+    "high aesthetic quality, clean composition, crisp details, adhere faithfully to all specified visual, layout, and text styling directives."
 )
 
 _IMG_PATH_RE = re.compile(
@@ -4389,7 +4426,8 @@ def _generate_one_image_pollinations(scene: str, dest: Path, width: int, height:
     _wait_pollinations_rate_limit()
 
     clean_prompt = re.sub(r'[\r\n\t]+', ' ', scene).strip()
-    if not any(k in clean_prompt.lower() for k in ["photorealistic", "photo", "cinematic", "photography"]):
+    is_pin = "pin" in label.lower()
+    if not is_pin and not any(k in clean_prompt.lower() for k in ["photorealistic", "photo", "cinematic", "photography"]):
         clean_prompt = f"{clean_prompt}, photorealistic, cinematic lighting, sharp focus, professional photography, no text, no watermark"
 
     encoded_prompt = urllib.parse.quote(clean_prompt)
@@ -4458,7 +4496,8 @@ def _generate_one_image_myserver(scene: str, dest: Path, width: int, height: int
         server_url = server_url + "/generate"
 
     clean_prompt = re.sub(r'[\r\n\t]+', ' ', scene).strip()
-    if not any(k in clean_prompt.lower() for k in ["photorealistic", "photo", "cinematic", "photography"]):
+    is_pin = "pin" in label.lower()
+    if not is_pin and not any(k in clean_prompt.lower() for k in ["photorealistic", "photo", "cinematic", "photography"]):
         clean_prompt = f"{clean_prompt}, photorealistic, cinematic lighting, sharp focus, professional photography, no text, no watermark"
 
     # Diffusers / SDXL pipelines strictly require width and height to be divisible by 8.
@@ -4466,10 +4505,14 @@ def _generate_one_image_myserver(scene: str, dest: Path, width: int, height: int
     sd_height = max(64, int(round(height / 8.0)) * 8)
 
     img_type_key = CONFIG.get("image_type", "photo")
-    if "pin" in label.lower() and CONFIG.get("pin_image_type") and CONFIG.get("pin_image_type") != "inherit":
+    if is_pin and CONFIG.get("pin_image_type") and CONFIG.get("pin_image_type") != "inherit":
         img_type_key = CONFIG["pin_image_type"]
     custom_neg = IMAGE_TYPES.get(img_type_key, {}).get("negative", "")
-    neg_prompt = f"{custom_neg}, text, watermark, writing, words, letters, font, typography" if custom_neg else "cartoon, drawing, painting, blurry, deformed hands, bad quality, oversaturated, CGI, text, watermark, writing, words, letters, font, typography"
+    has_text_instruction = bool(re.search(r'\b(text|typography|title|heading|lettering|badge|quote|checklist|infographic)\b', clean_prompt, re.IGNORECASE))
+    if is_pin and has_text_instruction:
+        neg_prompt = custom_neg or "cartoon, drawing, painting, blurry, deformed hands, bad quality, oversaturated, CGI"
+    else:
+        neg_prompt = f"{custom_neg}, text, watermark, writing, words, letters, font, typography" if custom_neg else "cartoon, drawing, painting, blurry, deformed hands, bad quality, oversaturated, CGI, text, watermark, writing, words, letters, font, typography"
 
     payload = {
         "prompt": clean_prompt,
@@ -4547,7 +4590,10 @@ def _generate_one_image_agy(scene: str, slug: str, dest: Path, label: str) -> bo
             try: expected_path.unlink()
             except Exception: pass
         before = _snapshot_brain()
-        prompt = AGY_IMG_PROMPT_TEMPLATE.format(scene=scene, path=expected_path)
+        if slug == "pin" or "pin" in label.lower():
+            prompt = AGY_PIN_IMG_PROMPT_TEMPLATE.format(scene=scene, path=expected_path)
+        else:
+            prompt = AGY_IMG_PROMPT_TEMPLATE.format(scene=scene, path=expected_path)
 
         try:
             raw = _run_agy(prompt, CONFIG["agy_img_timeout"])
@@ -4757,7 +4803,12 @@ def phase_images(structured: dict, url: str, db, out_dir: Path) -> dict:
     pin_dest = None
     if CONFIG.get("pinterest_pin"):
         pin_dest = _img_path(idir, "pin")
-        raw_pin = structured.get("pin_image_prompt") or structured.get("feature_image_prompt") or structured.get("title", "pin")
+        raw_pin = (
+            structured.get("pin_image_prompt")
+            or (f"Action planner, visual checklist and step-by-step roadmap for {structured.get('title', 'pin')}"
+                if CONFIG.get("pin_image_type") == "infographic_planner"
+                else (structured.get("feature_image_prompt") or structured.get("title", "pin")))
+        )
         pin_scene = _resolve_image_prompt(raw_pin, image_role="pin")
         pin_key = "img:pin"
 

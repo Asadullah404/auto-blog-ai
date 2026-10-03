@@ -139,6 +139,7 @@ IMAGE_TYPE_LABELS = {
     "Vintage / Retro 1970s Film":           "vintage",
     "Commercial Studio / Product Macro":    "studio",
     "Watercolor & Ink Illustration":        "watercolor",
+    "Action Planner & Checklist Infographic": "infographic_planner",
     "Custom Style…":                        "custom",
 }
 IMAGE_TYPE_LABELS_REV = {v: k for k, v in IMAGE_TYPE_LABELS.items()}
@@ -150,11 +151,13 @@ IMAGE_TYPE_DESCRIPTIONS = {
     "vintage": "1970s Kodachrome film look, warm tones, subtle grain, nostalgic light leaks. Negatives: modern digital CGI, neon.",
     "studio": "Commercial product macro shot, pristine soft neutral lighting, high-key clean focus. Negatives: outdoor, noisy, messy.",
     "watercolor": "Expressive watercolor & ink, delicate washes, visible paper texture, fluid strokes. Negatives: photo, 3d render, CGI.",
+    "infographic_planner": "Pinterest action planner & visual checklist aesthetic with structured step cards, clean layout space, elegant accents. Negatives: messy clutter, chaotic, dark.",
     "custom": "Specify your own custom artistic style, descriptors, lighting, and negative prompts below.",
 }
 
 PIN_IMAGE_TYPE_LABELS = {
     "Inherit Global Style":                 "inherit",
+    "Action Planner & Checklist Infographic": "infographic_planner",
     "Photorealistic (35mm Documentary)":    "photo",
     "Cinematic Film Still (70mm)":          "cinematic",
     "Modern Flat Vector / Illustration":    "vector",
@@ -165,6 +168,14 @@ PIN_IMAGE_TYPE_LABELS = {
     "Custom Style…":                        "custom",
 }
 PIN_IMAGE_TYPE_LABELS_REV = {v: k for k, v in PIN_IMAGE_TYPE_LABELS.items()}
+
+PIN_MASTER_PRESETS = {
+    "Select Pin Layout & Visual Template…": "",
+    "Action Planner & Move Roadmap": "Action planner visual roadmap, organized numbered milestone cards, step-by-step checklist layout, pastel color accents, clean modern typography-friendly space, high aesthetic Pinterest composition",
+    "Visual Step-by-Step Checklist": "Visual checklist guide, clean organized planning blocks, modern minimalist card aesthetic, warm editorial color scheme, elegant typography layout",
+    "Bold Viral Infographic Guide": "High-converting viral Pinterest infographic layout, bold contrast badges, clean instructional cards, vibrant modern color palette, 8k sharp details",
+    "Aesthetic Lifestyle Planning Board": "Aesthetic lifestyle mood-board and planning aesthetic, soft natural daylight, minimalist editorial typography space, clean organized elements",
+}
 
 MASTER_TEXT_PRESETS = {
     "Select a Persona / Style Preset…": "",
@@ -1088,6 +1099,10 @@ class ControlPanel(ctk.CTk):
         state = "normal" if enabled else "disabled"
         if hasattr(self, "pin_image_type_menu"):
             self.pin_image_type_menu.configure(state=state)
+        if hasattr(self, "pin_preset_menu"):
+            self.pin_preset_menu.configure(state=state)
+        if hasattr(self, "txt_pin_master_prompt"):
+            self.txt_pin_master_prompt.configure(state=state)
         if hasattr(self, "e_pin_master_prompt"):
             self.e_pin_master_prompt.configure(state=state)
         if hasattr(self, "e_pin_image_type_custom"):
@@ -1920,16 +1935,65 @@ class ControlPanel(ctk.CTk):
 
         self._on_pin_image_type_change(self.pin_image_type_menu.get())
 
-        ctk.CTkLabel(self.pin_res_frame, text="Master Prompt Addition (Style / Quality / Layout)",
+        ctk.CTkLabel(self.pin_res_frame, text="Pinterest Pin Master Prompt (Visual Style, Layout & Typography)",
                      anchor="w", text_color=COLORS["text_dim"]).pack(fill="x", pady=(6, 0))
-        self.e_pin_master_prompt = ctk.CTkEntry(self.pin_res_frame, height=36,
-                                                placeholder_text="e.g. 8k UHD, viral Pinterest pin aesthetic, vibrant colors, clean layout space",
-                                                fg_color=COLORS["bg_alt"], border_color=COLORS["border"])
-        self.e_pin_master_prompt.pack(fill="x", pady=(2, 2))
+
+        # Quick preset template selector
+        def _on_pin_preset_select(choice):
+            val = PIN_MASTER_PRESETS.get(choice, "")
+            if val:
+                self.txt_pin_master_prompt.delete("1.0", "end")
+                self.txt_pin_master_prompt.insert("1.0", val)
+
+        self.pin_preset_menu = ctk.CTkOptionMenu(
+            self.pin_res_frame,
+            values=list(PIN_MASTER_PRESETS.keys()),
+            command=_on_pin_preset_select,
+            fg_color=COLORS["bg_alt"],
+            button_color=COLORS["surface"],
+            button_hover_color=COLORS["accent"],
+            text_color=COLORS["text"],
+            height=28
+        )
+        self.pin_preset_menu.set("Select Pin Layout & Visual Template…")
+        self.pin_preset_menu.pack(fill="x", pady=(2, 4))
+
+        self.txt_pin_master_prompt = ctk.CTkTextbox(
+            self.pin_res_frame,
+            height=85,
+            fg_color=COLORS["bg_alt"],
+            border_color=COLORS["border"],
+            border_width=1,
+            wrap="word",
+            font=ctk.CTkFont(size=12)
+        )
+        self.txt_pin_master_prompt.pack(fill="x", pady=(2, 2))
         if self.cfg.get("pin_image_master_prompt"):
-            self.e_pin_master_prompt.insert(0, self.cfg["pin_image_master_prompt"])
-        ctk.CTkLabel(self.pin_res_frame, text="Appended specifically to the Pinterest pin AI prompt.",
-                     anchor="w", text_color=COLORS["text_mute"], font=ctk.CTkFont(size=10)).pack(fill="x", pady=(0, 2))
+            self.txt_pin_master_prompt.insert("1.0", self.cfg["pin_image_master_prompt"])
+
+        # Quick action buttons row (Action Planner, Checklist, Clear)
+        pin_btn_row = ctk.CTkFrame(self.pin_res_frame, fg_color="transparent")
+        pin_btn_row.pack(fill="x", pady=(0, 2))
+
+        def _insert_pin_template(template_text):
+            self.txt_pin_master_prompt.delete("1.0", "end")
+            self.txt_pin_master_prompt.insert("1.0", template_text)
+
+        ctk.CTkButton(pin_btn_row, text="+ Action Planner", width=110, height=24,
+                      fg_color=COLORS["surface"], hover_color=COLORS["accent"],
+                      font=ctk.CTkFont(size=11),
+                      command=lambda: _insert_pin_template(PIN_MASTER_PRESETS["Action Planner & Move Roadmap"])).pack(side="left", padx=(0, 4))
+        ctk.CTkButton(pin_btn_row, text="+ Visual Checklist", width=110, height=24,
+                      fg_color=COLORS["surface"], hover_color=COLORS["accent"],
+                      font=ctk.CTkFont(size=11),
+                      command=lambda: _insert_pin_template(PIN_MASTER_PRESETS["Visual Step-by-Step Checklist"])).pack(side="left", padx=4)
+        ctk.CTkButton(pin_btn_row, text="Clear", width=55, height=24,
+                      fg_color=COLORS["bg_alt"], hover_color=COLORS["danger"],
+                      font=ctk.CTkFont(size=11),
+                      command=lambda: self.txt_pin_master_prompt.delete("1.0", "end")).pack(side="right")
+
+        ctk.CTkLabel(self.pin_res_frame, text="Injected real-time into the AI pin scene and dispatched directly to the image generation engine.",
+                     anchor="w", text_color=COLORS["text_mute"], font=ctk.CTkFont(size=10)).pack(fill="x", pady=(2, 2))
 
         self._on_pinterest_toggle()
 
@@ -2167,7 +2231,11 @@ class ControlPanel(ctk.CTk):
             "heading_text_overlay": bool(self.heading_text_var.get()),
             "feature_text_overlay": bool(self.feature_text_var.get()),
             "pinterest_pin":        bool(self.pinterest_var.get()),
-            "pin_image_master_prompt": self.e_pin_master_prompt.get().strip() if hasattr(self, "e_pin_master_prompt") else self.cfg.get("pin_image_master_prompt", ""),
+            "pin_image_master_prompt": (
+                self.txt_pin_master_prompt.get("1.0", "end").strip()
+                if hasattr(self, "txt_pin_master_prompt")
+                else (self.e_pin_master_prompt.get().strip() if hasattr(self, "e_pin_master_prompt") else self.cfg.get("pin_image_master_prompt", ""))
+            ),
             "pin_image_type":          PIN_IMAGE_TYPE_LABELS.get(self.pin_image_type_menu.get(), "inherit") if hasattr(self, "pin_image_type_menu") else self.cfg.get("pin_image_type", "inherit"),
             "pin_image_type_custom":   self.e_pin_image_type_custom.get().strip() if hasattr(self, "e_pin_image_type_custom") else self.cfg.get("pin_image_type_custom", ""),
             "feature_image_master_prompt": self.e_feat_master_prompt.get().strip() if hasattr(self, "e_feat_master_prompt") else self.cfg.get("feature_image_master_prompt", ""),
@@ -2238,7 +2306,10 @@ class ControlPanel(ctk.CTk):
         if hasattr(self, "e_pin_image_type_custom"):
             self.e_pin_image_type_custom.delete(0, "end")
             self.e_pin_image_type_custom.insert(0, cfg.get("pin_image_type_custom", ""))
-        if hasattr(self, "e_pin_master_prompt"):
+        if hasattr(self, "txt_pin_master_prompt"):
+            self.txt_pin_master_prompt.delete("1.0", "end")
+            self.txt_pin_master_prompt.insert("1.0", cfg.get("pin_image_master_prompt", ""))
+        elif hasattr(self, "e_pin_master_prompt"):
             self.e_pin_master_prompt.delete(0, "end")
             self.e_pin_master_prompt.insert(0, cfg.get("pin_image_master_prompt", ""))
         self._apply_resolution("image_resolution", cfg.get("image_resolution", "hd"))
@@ -2513,7 +2584,11 @@ class ControlPanel(ctk.CTk):
             args.append("--no-heading-text")
         if self.pinterest_var.get():
             args.append("--pinterest-pin")
-            pin_master = self.e_pin_master_prompt.get().strip() if hasattr(self, "e_pin_master_prompt") else self.cfg.get("pin_image_master_prompt", "")
+            pin_master = (
+                self.txt_pin_master_prompt.get("1.0", "end").strip()
+                if hasattr(self, "txt_pin_master_prompt")
+                else (self.e_pin_master_prompt.get().strip() if hasattr(self, "e_pin_master_prompt") else self.cfg.get("pin_image_master_prompt", ""))
+            )
             if pin_master:
                 args.extend(["--pin-master-prompt", pin_master])
             pin_type_val = PIN_IMAGE_TYPE_LABELS.get(self.pin_image_type_menu.get(), "inherit") if hasattr(self, "pin_image_type_menu") else self.cfg.get("pin_image_type", "inherit")
