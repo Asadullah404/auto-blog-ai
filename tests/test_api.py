@@ -23,7 +23,7 @@ class TestRestAPI(unittest.TestCase):
         html = response.data.decode("utf-8")
         self.assertIn("Content Pipeline Pro", html)
         self.assertIn("fluent-shell", html)
-        self.assertIn("workflow-canvas", html)
+        self.assertIn("workflow-split-layout", html)
 
     def test_pipeline_status(self):
         """GET /api/pipeline/status should return pipeline state."""

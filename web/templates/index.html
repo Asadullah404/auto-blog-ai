@@ -320,202 +320,249 @@
         <section id="view-workflow" class="fluent-view">
           <div class="view-header">
             <div>
-              <h1 class="view-title">Visual Workflow Engine (n8n Architecture)</h1>
+              <h1 class="view-title">Pipeline Workflow Studio</h1>
               <p class="view-subtitle">Interactive state graph of active pipeline nodes, live transformations, and publishing connectors</p>
             </div>
             <div class="action-toolbar">
               <button id="workflow-run-btn" class="fluent-btn btn-accent">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-                <span>Execute Workflow</span>
+                <span>Execute Full Pipeline</span>
               </button>
-              <button id="workflow-reset-btn" class="fluent-btn btn-secondary">Center View</button>
+              <button id="workflow-reset-btn" class="fluent-btn btn-secondary">Reset Status</button>
             </div>
           </div>
 
-          <div class="workflow-canvas-container" id="workflow-container">
-            <!-- Interactive Visual Node Canvas -->
-            <div class="workflow-canvas" id="workflow-canvas">
-              <svg class="workflow-connectors-svg" id="workflow-svg">
-                <!-- SVG Bézier connection lines drawn dynamically by workflow.js -->
-              </svg>
-
+          <div class="workflow-split-layout">
+            <!-- Left Column: Connected Pipeline Graph -->
+            <div class="workflow-pipeline-column">
+              
               <!-- Node 1: Ingestion -->
-              <div class="workflow-node" id="node-input" data-node="input" style="top: 180px; left: 60px;">
-                <div class="node-port port-input" title="Input Port"></div>
-                <div class="node-main-row">
-                  <div class="node-icon-box icon-orange">
+              <div class="pipeline-step-card" id="node-input" data-node="input">
+                <div class="step-card-header">
+                  <div class="step-icon-wrap icon-orange">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
                   </div>
-                  <div class="node-text-col">
-                    <div class="node-title-row">
-                      <span class="node-title">1. Content Input</span>
-                      <span class="node-tag tag-trigger">Trigger</span>
+                  <div class="step-header-info">
+                    <div class="step-title-line">
+                      <span class="step-number">Step 1</span>
+                      <h3 class="step-title">Content Input & Queue</h3>
+                      <span class="step-badge badge-trigger">Trigger</span>
                     </div>
-                    <div class="node-subtitle" id="node-input-meta">Active Mode: Online</div>
-                    <div class="node-status-pill status-ready" id="node-input-pill">
-                      <span class="pill-dot"></span>
-                      <span class="pill-text">Ready</span>
-                    </div>
+                    <div class="step-desc" id="node-input-meta">Target URLs, CSV batch files, or Cloud Firestore queue</div>
+                  </div>
+                  <div class="step-status-pill status-ready" id="node-input-pill">
+                    <span class="pill-dot"></span>
+                    <span class="pill-text">Ready</span>
                   </div>
                 </div>
-                <div class="node-port port-output" title="Output Port"></div>
               </div>
 
-              <!-- Node 2: Extraction -->
-              <div class="workflow-node" id="node-extract" data-node="extract" style="top: 180px; left: 380px;">
-                <div class="node-port port-input" title="Input Port"></div>
-                <div class="node-main-row">
-                  <div class="node-icon-box icon-blue">
+              <!-- Connector 1 -> 2 -->
+              <div class="pipeline-wire" id="wire-1-2">
+                <div class="wire-line"></div>
+                <div class="wire-arrow">▼</div>
+              </div>
+
+              <!-- Node 2: Extractor -->
+              <div class="pipeline-step-card" id="node-extract" data-node="extract">
+                <div class="step-card-header">
+                  <div class="step-icon-wrap icon-blue">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
                   </div>
-                  <div class="node-text-col">
-                    <div class="node-title-row">
-                      <span class="node-title">2. DOM Extractor</span>
-                      <span class="node-tag">Phase 1</span>
+                  <div class="step-header-info">
+                    <div class="step-title-line">
+                      <span class="step-number">Step 2</span>
+                      <h3 class="step-title">DOM Web Extractor</h3>
+                      <span class="step-badge">Phase 1</span>
                     </div>
-                    <div class="node-subtitle" id="node-extract-meta">newspaper4k & DOM</div>
-                    <div class="node-status-pill status-idle" id="node-extract-pill">
-                      <span class="pill-dot"></span>
-                      <span class="pill-text">Idle</span>
-                    </div>
+                    <div class="step-desc" id="node-extract-meta">newspaper4k & BeautifulSoup4 structured scraping</div>
+                  </div>
+                  <div class="step-status-pill status-idle" id="node-extract-pill">
+                    <span class="pill-dot"></span>
+                    <span class="pill-text">Idle</span>
                   </div>
                 </div>
-                <div class="node-port port-output" title="Output Port"></div>
               </div>
 
-              <!-- Node 3: AI Transformation -->
-              <div class="workflow-node" id="node-transform" data-node="transform" style="top: 180px; left: 700px;">
-                <div class="node-port port-input" title="Input Port"></div>
-                <div class="node-main-row">
-                  <div class="node-icon-box icon-purple">
+              <!-- Connector 2 -> 3 -->
+              <div class="pipeline-wire" id="wire-2-3">
+                <div class="wire-line"></div>
+                <div class="wire-arrow">▼</div>
+              </div>
+
+              <!-- Node 3: AI Transform -->
+              <div class="pipeline-step-card active-selected" id="node-transform" data-node="transform">
+                <div class="step-card-header">
+                  <div class="step-icon-wrap icon-purple">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
                   </div>
-                  <div class="node-text-col">
-                    <div class="node-title-row">
-                      <span class="node-title">3. AI Transform</span>
-                      <span class="node-tag">Phase 2</span>
+                  <div class="step-header-info">
+                    <div class="step-title-line">
+                      <span class="step-number">Step 3</span>
+                      <h3 class="step-title">AI Content Transformation</h3>
+                      <span class="step-badge">Phase 2</span>
                     </div>
-                    <div class="node-subtitle" id="node-transform-meta">Gemini 2.5 Flash</div>
-                    <div class="node-status-pill status-idle" id="node-transform-pill">
-                      <span class="pill-dot"></span>
-                      <span class="pill-text">Idle</span>
-                    </div>
+                    <div class="step-desc" id="node-transform-meta">Gemini 2.5 Flash with SEO, GEO, and AEO skills injection</div>
+                  </div>
+                  <div class="step-status-pill status-idle" id="node-transform-pill">
+                    <span class="pill-dot"></span>
+                    <span class="pill-text">Idle</span>
                   </div>
                 </div>
-                <div class="node-port port-output" title="Output Port"></div>
+              </div>
+
+              <!-- Connector 3 -> 4 -->
+              <div class="pipeline-wire" id="wire-3-4">
+                <div class="wire-line"></div>
+                <div class="wire-arrow">▼</div>
               </div>
 
               <!-- Node 4: Image Synthesis -->
-              <div class="workflow-node" id="node-images" data-node="images" style="top: 180px; left: 1020px;">
-                <div class="node-port port-input" title="Input Port"></div>
-                <div class="node-main-row">
-                  <div class="node-icon-box icon-emerald">
+              <div class="pipeline-step-card" id="node-images" data-node="images">
+                <div class="step-card-header">
+                  <div class="step-icon-wrap icon-emerald">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
                   </div>
-                  <div class="node-text-col">
-                    <div class="node-title-row">
-                      <span class="node-title">4. Image Synthesis</span>
-                      <span class="node-tag">Phase 3</span>
+                  <div class="step-header-info">
+                    <div class="step-title-line">
+                      <span class="step-number">Step 4</span>
+                      <h3 class="step-title">Image Synthesis & Pinterest Pins</h3>
+                      <span class="step-badge">Phase 3</span>
                     </div>
-                    <div class="node-subtitle" id="node-images-meta">Multi-engine + Pin</div>
-                    <div class="node-status-pill status-idle" id="node-images-pill">
-                      <span class="pill-dot"></span>
-                      <span class="pill-text">Idle</span>
-                    </div>
+                    <div class="step-desc" id="node-images-meta">Pollinations AI, Google Imagen, or Colab GPU SDXL</div>
+                  </div>
+                  <div class="step-status-pill status-idle" id="node-images-pill">
+                    <span class="pill-dot"></span>
+                    <span class="pill-text">Idle</span>
                   </div>
                 </div>
-                <div class="node-port port-output" title="Output Port"></div>
               </div>
 
-              <!-- Node 5: OpenCV Rendering -->
-              <div class="workflow-node" id="node-render" data-node="render" style="top: 180px; left: 1340px;">
-                <div class="node-port port-input" title="Input Port"></div>
-                <div class="node-main-row">
-                  <div class="node-icon-box icon-rose">
+              <!-- Connector 4 -> 5 -->
+              <div class="pipeline-wire" id="wire-4-5">
+                <div class="wire-line"></div>
+                <div class="wire-arrow">▼</div>
+              </div>
+
+              <!-- Node 5: Typography Rendering -->
+              <div class="pipeline-step-card" id="node-render" data-node="render">
+                <div class="step-card-header">
+                  <div class="step-icon-wrap icon-rose">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7V4h16v3M9 20h6M12 4v16"></path></svg>
                   </div>
-                  <div class="node-text-col">
-                    <div class="node-title-row">
-                      <span class="node-title">5. OpenCV Typo</span>
-                      <span class="node-tag">Phase 4</span>
+                  <div class="step-header-info">
+                    <div class="step-title-line">
+                      <span class="step-number">Step 5</span>
+                      <h3 class="step-title">OpenCV Typography Overlay</h3>
+                      <span class="step-badge">Phase 4</span>
                     </div>
-                    <div class="node-subtitle" id="node-render-meta">Typography & Scrim</div>
-                    <div class="node-status-pill status-idle" id="node-render-pill">
-                      <span class="pill-dot"></span>
-                      <span class="pill-text">Idle</span>
-                    </div>
+                    <div class="step-desc" id="node-render-meta">High-contrast text overlays, gradient scrims, and drop shadows</div>
+                  </div>
+                  <div class="step-status-pill status-idle" id="node-render-pill">
+                    <span class="pill-dot"></span>
+                    <span class="pill-text">Idle</span>
                   </div>
                 </div>
-                <div class="node-port port-output" title="Output Port"></div>
               </div>
 
-              <!-- Node 6: HTML5 Compiler -->
-              <div class="workflow-node" id="node-compile" data-node="compile" style="top: 180px; left: 1660px;">
-                <div class="node-port port-input" title="Input Port"></div>
-                <div class="node-main-row">
-                  <div class="node-icon-box icon-amber">
+              <!-- Connector 5 -> 6 -->
+              <div class="pipeline-wire" id="wire-5-6">
+                <div class="wire-line"></div>
+                <div class="wire-arrow">▼</div>
+              </div>
+
+              <!-- Node 6: Compiler -->
+              <div class="pipeline-step-card" id="node-compile" data-node="compile">
+                <div class="step-card-header">
+                  <div class="step-icon-wrap icon-amber">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
                   </div>
-                  <div class="node-text-col">
-                    <div class="node-title-row">
-                      <span class="node-title">6. HTML5 Compiler</span>
-                      <span class="node-tag">Phase 5</span>
+                  <div class="step-header-info">
+                    <div class="step-title-line">
+                      <span class="step-number">Step 6</span>
+                      <h3 class="step-title">Standalone HTML5 Compiler</h3>
+                      <span class="step-badge">Phase 5</span>
                     </div>
-                    <div class="node-subtitle" id="node-compile-meta">Semantic + Schema.org</div>
-                    <div class="node-status-pill status-idle" id="node-compile-pill">
-                      <span class="pill-dot"></span>
-                      <span class="pill-text">Idle</span>
-                    </div>
+                    <div class="step-desc" id="node-compile-meta">Semantic HTML document with Schema.org Article & FAQPage JSON-LD</div>
+                  </div>
+                  <div class="step-status-pill status-idle" id="node-compile-pill">
+                    <span class="pill-dot"></span>
+                    <span class="pill-text">Idle</span>
                   </div>
                 </div>
-                <div class="node-port port-output" title="Output Port"></div>
+              </div>
+
+              <!-- Connector 6 -> 7 -->
+              <div class="pipeline-wire" id="wire-6-7">
+                <div class="wire-line"></div>
+                <div class="wire-arrow">▼</div>
               </div>
 
               <!-- Node 7: WordPress Publisher -->
-              <div class="workflow-node" id="node-publish" data-node="publish" style="top: 180px; left: 1980px;">
-                <div class="node-port port-input" title="Input Port"></div>
-                <div class="node-main-row">
-                  <div class="node-icon-box icon-indigo">
+              <div class="pipeline-step-card" id="node-publish" data-node="publish">
+                <div class="step-card-header">
+                  <div class="step-icon-wrap icon-indigo">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M2 12h20"></path></svg>
                   </div>
-                  <div class="node-text-col">
-                    <div class="node-title-row">
-                      <span class="node-title">7. Gutenberg Publish</span>
-                      <span class="node-tag">Phase 6</span>
+                  <div class="step-header-info">
+                    <div class="step-title-line">
+                      <span class="step-number">Step 7</span>
+                      <h3 class="step-title">Gutenberg WordPress Publisher</h3>
+                      <span class="step-badge">Phase 6</span>
                     </div>
-                    <div class="node-subtitle" id="node-publish-meta">REST API + Rank Math</div>
-                    <div class="node-status-pill status-idle" id="node-publish-pill">
-                      <span class="pill-dot"></span>
-                      <span class="pill-text">Idle</span>
+                    <div class="step-desc" id="node-publish-meta">WordPress REST API with native Gutenberg comment blocks & Rank Math</div>
+                  </div>
+                  <div class="step-status-pill status-idle" id="node-publish-pill">
+                    <span class="pill-dot"></span>
+                    <span class="pill-text">Idle</span>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+
+            <!-- Right Column: Interactive Node Inspector Panel -->
+            <div class="workflow-inspector-panel">
+              <div class="fluent-card inspector-card">
+                <div class="inspector-header">
+                  <div>
+                    <span class="inspector-badge" id="inspector-step-badge">Step 3 • Phase 2</span>
+                    <h2 class="inspector-title" id="inspector-title">AI Content Transformation</h2>
+                    <div class="inspector-subtitle" id="inspector-subtitle">LLM Rewriting & Skills Injection Engine</div>
+                  </div>
+                </div>
+
+                <div class="fluent-form-divider"></div>
+
+                <div class="inspector-section">
+                  <h4 class="inspector-section-heading">Operational Purpose</h4>
+                  <p class="inspector-desc" id="inspector-desc">Transforms extracted article content into an authoritative, highly engaging article infused with active SEO, GEO, and AEO skill directives.</p>
+                </div>
+
+                <div class="inspector-section">
+                  <h4 class="inspector-section-heading">Active Parameters & Specs</h4>
+                  <div class="inspector-specs-grid" id="inspector-specs">
+                    <div class="spec-row"><span class="spec-label">Active Model:</span><span class="spec-val">Gemini 2.5 Flash</span></div>
+                    <div class="spec-row"><span class="spec-label">Format Preset:</span><span class="spec-val">Hybrid (Narrative + Structured Lists)</span></div>
+                    <div class="spec-row"><span class="spec-label">Skills Injected:</span><span class="spec-val">SEO Copywriting, GEO v1.0, AEO v1.0</span></div>
+                    <div class="spec-row"><span class="spec-label">JSON Healing:</span><span class="spec-val">Automatic regex bracket recovery</span></div>
+                  </div>
+                </div>
+
+                <div class="inspector-section">
+                  <h4 class="inspector-section-heading">Data In / Out Contract</h4>
+                  <div class="inspector-io-box">
+                    <div class="io-item">
+                      <span class="io-label">Input Data:</span>
+                      <span class="io-val" id="inspector-input-val">Raw article text, H2 headings, metadata</span>
+                    </div>
+                    <div class="io-item">
+                      <span class="io-label">Output Data:</span>
+                      <span class="io-val" id="inspector-output-val">Structured sections JSON, FAQ schema, SEO meta</span>
                     </div>
                   </div>
                 </div>
-                <div class="node-port port-output" title="Output Port"></div>
-              </div>
 
-            </div>
-
-            <!-- Floating n8n Canvas Controls HUD -->
-            <div class="workflow-hud">
-              <button id="wf-zoom-in" class="hud-btn" title="Zoom In">+</button>
-              <span id="wf-zoom-level" class="hud-text">100%</span>
-              <button id="wf-zoom-out" class="hud-btn" title="Zoom Out">-</button>
-              <div class="hud-divider"></div>
-              <button id="wf-fit-view" class="hud-btn" title="Fit to View">Fit</button>
-            </div>
-
-            <!-- Slide-Out Node Inspector Drawer -->
-            <div class="workflow-drawer" id="workflow-drawer">
-              <div class="drawer-header">
-                <div>
-                  <h3 class="drawer-title" id="drawer-node-title">Node Inspector</h3>
-                  <span class="drawer-subtitle" id="drawer-node-type">Parameter details</span>
-                </div>
-                <button class="drawer-close" id="drawer-close-btn">&times;</button>
-              </div>
-
-              <div class="drawer-body" id="drawer-node-content">
-                <p>Click any node in the workflow canvas to inspect its active parameters, performance metrics, and configuration options.</p>
               </div>
             </div>
           </div>

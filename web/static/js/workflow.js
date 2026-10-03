@@ -1,133 +1,193 @@
 /**
- * Content Pipeline Pro - n8n-Inspired Visual Workflow Engine
- * Features:
- * - Authentic n8n node cards with input/output connection handles
- * - Smooth cubic Bézier wires with active animated pulse flow
- * - Interactive node dragging with dynamic real-time wire following
- * - Canvas panning and multi-level zoom controls
- * - Slide-out parameter inspector drawer
+ * Content Pipeline Pro - Windows 11 Fluent Pipeline Workflow Studio
+ * Vertical Split-Screen Architecture with Live Inspector & Illuminated Connectors
  */
 
 class WorkflowManager {
   constructor() {
-    this.container = document.getElementById('workflow-container');
-    this.canvas = document.getElementById('workflow-canvas');
-    this.svg = document.getElementById('workflow-svg');
-    this.drawer = document.getElementById('workflow-drawer');
-    this.drawerTitle = document.getElementById('drawer-node-title');
-    this.drawerType = document.getElementById('drawer-node-type');
-    this.drawerContent = document.getElementById('drawer-node-content');
-    this.drawerClose = document.getElementById('drawer-close-btn');
+    this.selectedNodeKey = 'transform';
+    this.activePhase = 0;
 
     this.nodes = [
-      { id: 'node-input', name: '1. Content Input', phase: 0, next: 'node-extract' },
-      { id: 'node-extract', name: '2. DOM Extractor', phase: 1, next: 'node-transform' },
-      { id: 'node-transform', name: '3. AI Transform', phase: 2, next: 'node-images' },
-      { id: 'node-images', name: '4. Image Synthesis', phase: 3, next: 'node-render' },
-      { id: 'node-render', name: '5. OpenCV Typo', phase: 4, next: 'node-compile' },
-      { id: 'node-compile', name: '6. HTML5 Compiler', phase: 5, next: 'node-publish' },
-      { id: 'node-publish', name: '7. Gutenberg Publish', phase: 6, next: null }
+      { key: 'input', id: 'node-input', wireBefore: null, wireAfter: 'wire-1-2', phase: 0 },
+      { key: 'extract', id: 'node-extract', wireBefore: 'wire-1-2', wireAfter: 'wire-2-3', phase: 1 },
+      { key: 'transform', id: 'node-transform', wireBefore: 'wire-2-3', wireAfter: 'wire-3-4', phase: 2 },
+      { key: 'images', id: 'node-images', wireBefore: 'wire-3-4', wireAfter: 'wire-4-5', phase: 3 },
+      { key: 'render', id: 'node-render', wireBefore: 'wire-4-5', wireAfter: 'wire-5-6', phase: 4 },
+      { key: 'compile', id: 'node-compile', wireBefore: 'wire-5-6', wireAfter: 'wire-6-7', phase: 5 },
+      { key: 'publish', id: 'node-publish', wireBefore: 'wire-6-7', wireAfter: null, phase: 6 }
     ];
 
     this.nodeDetails = {
-      'node-input': {
-        type: 'Source Ingestion (Trigger)',
-        description: 'Ingests URLs from active queue, CSV batch spreadsheets, or Cloud Firestore lease pool.',
-        fields: [
-          { label: 'Source Modes', value: 'Queue / CSV Upload / Firestore Leasing' },
-          { label: 'Batch Sizing', value: 'Auto-chunked with SQLite WAL checkpoints' },
-          { label: 'Fault Recovery', value: 'Idempotent per-article checkpoint caching' }
-        ]
+      'input': {
+        badge: 'Step 1 • Ingestion Trigger',
+        title: 'Content Input & Ingestion Queue',
+        subtitle: 'Source Feeds, CSV Uploads & Cloud Leasing',
+        description: 'Ingests target article URLs from the local queue, CSV batch spreadsheets, or Cloud Firestore lease pool with SQLite WAL idempotent checkpointing.',
+        specs: [
+          { label: 'Source Ingestion:', value: 'Interactive URL, CSV Batch, Firestore' },
+          { label: 'Fault Recovery:', value: 'Idempotent per-article SQLite WAL cache' },
+          { label: 'Execution Mode:', value: 'Online REST API or Offline Bundles' },
+          { label: 'Concurrency:', value: 'Single-thread worker with pause/resume' }
+        ],
+        input: 'Target article URLs, batch CSV file, or Firestore collection',
+        output: 'Normalized article task items in pipeline queue'
       },
-      'node-extract': {
-        type: 'Phase 1: Structured DOM Extractor',
-        description: 'Extracts full article body, titles, section headers, author, and metadata.',
-        fields: [
-          { label: 'Extractor Core', value: 'newspaper4k + BeautifulSoup4 DOM fallbacks' },
-          { label: 'User Agent', value: 'Desktop Windows 11 Chrome Spoofing' },
-          { label: 'Cleaners', value: 'Ad-stripping, script removal, boilerpipe heuristic' }
-        ]
+      'extract': {
+        badge: 'Step 2 • Phase 1',
+        title: 'DOM Web Extractor',
+        subtitle: 'newspaper4k & BeautifulSoup4 Structured Scraper',
+        description: 'Extracts full article body, section headers (H2/H3), author details, publication date, and metadata while stripping ads, sidebars, and scripts.',
+        specs: [
+          { label: 'Primary Engine:', value: 'newspaper4k' },
+          { label: 'Fallback Scraper:', value: 'BeautifulSoup4 Heuristic Scraper' },
+          { label: 'Spoof Headers:', value: 'Windows 11 Chrome Desktop User-Agent' },
+          { label: 'Content Sanitizer:', value: 'Removes navbars, ads, trackers & boilerpipe' }
+        ],
+        input: 'Target web article HTTP / HTTPS URL',
+        output: 'Raw HTML, extracted text body, H2 list, author & meta tags'
       },
-      'node-transform': {
-        type: 'Phase 2: AI Rewriting & SEO Engine',
-        description: 'Transforms raw web content into authoritative articles infused with active SEO, GEO, and AEO skill directives.',
-        fields: [
-          { label: 'Active LLM', value: 'Google Gemini 2.5 Flash' },
-          { label: 'Article Format', value: 'Hybrid (Narrative + Bulleted Key Points)' },
-          { label: 'Skills Injected', value: 'SEO Copywriting v3.0, GEO v1.0, AEO v1.0' },
-          { label: 'Schema Synthesis', value: 'Generates FAQ Q&A and Article Metadata' }
-        ]
+      'transform': {
+        badge: 'Step 3 • Phase 2',
+        title: 'AI Content Transformation',
+        subtitle: 'Gemini 2.5 Flash + Skills Injection Engine',
+        description: 'Transforms extracted article content into an authoritative, highly engaging article infused with active SEO, GEO, and AEO skill directives.',
+        specs: [
+          { label: 'Active LLM:', value: 'Google Gemini 2.5 Flash' },
+          { label: 'Format Preset:', value: 'Hybrid (Narrative + Structured Lists)' },
+          { label: 'Skills Injected:', value: 'SEO Copywriting, GEO v1.0, AEO v1.0' },
+          { label: 'Fault Recovery:', value: 'Auto regex JSON bracket repair & healing' }
+        ],
+        input: 'Raw article text, extracted H2 headings, metadata',
+        output: 'Structured sections JSON, FAQ schema, SEO meta title & description'
       },
-      'node-images': {
-        type: 'Phase 3: Multi-Engine Image Synthesis',
-        description: 'Generates high-definition featured images and vertical 1000x1500 Pinterest marketing pins.',
-        fields: [
-          { label: 'Active Engine', value: 'Pollinations AI (Fallback: Google Imagen / Colab SDXL)' },
-          { label: 'Preset Aspect Ratio', value: 'Landscape 16:9 (1200x675)' },
-          { label: 'Pinterest Pin', value: 'Vertical 2:3 (1000x1500) with custom style' },
-          { label: 'Master Prompt', value: 'Active aesthetic global prefix' }
-        ]
+      'images': {
+        badge: 'Step 4 • Phase 3',
+        title: 'Image Synthesis & Pinterest Pins',
+        subtitle: 'Multi-Engine Generation & Pin Engine',
+        description: 'Generates high-definition featured images and vertical 1000x1500 Pinterest marketing pins via Pollinations AI, Google Imagen, or Colab GPU SDXL.',
+        specs: [
+          { label: 'Image Engine:', value: 'Pollinations AI (Fallback: Imagen / Colab)' },
+          { label: 'Featured Aspect:', value: 'Landscape 16:9 (1200x675)' },
+          { label: 'Pinterest Pin:', value: 'Vertical 2:3 (1000x1500)' },
+          { label: 'Master Prompts:', value: 'Global aesthetic prefix & negative prompts' }
+        ],
+        input: 'Transformed section image prompts, article title, keywords',
+        output: 'Raw PNG/JPEG images saved to output/<slug>/'
       },
-      'node-render': {
-        type: 'Phase 4: OpenCV Typography Overlay',
-        description: 'Overlays article titles and category badges onto images with word-wrapped drop shadows and gradient dark scrims.',
-        fields: [
-          { label: 'Rendering Core', value: 'OpenCV & Pillow (PIL)' },
-          { label: 'Typography', value: 'Segoe UI Variable / Arial HD font metrics' },
-          { label: 'Gradient Scrim', value: 'Smooth linear bottom darkening band' }
-        ]
+      'render': {
+        badge: 'Step 5 • Phase 4',
+        title: 'OpenCV Typography Overlay',
+        subtitle: 'Word-Wrap Drop Shadows & Gradient Dark Scrims',
+        description: 'Overlays article titles and category badges onto images with word-wrapped drop shadows and gradient dark scrims for maximum legibility.',
+        specs: [
+          { label: 'Rendering Core:', value: 'OpenCV & Pillow (PIL)' },
+          { label: 'Gradient Scrim:', value: 'Dynamic linear bottom darkening band' },
+          { label: 'Typography:', value: 'Segoe UI Variable / Arial HD metrics' },
+          { label: 'Output Format:', value: 'WebP compressed for fast web delivery' }
+        ],
+        input: 'Raw synthesized image, article headline, category badge',
+        output: 'Rendered featured image WebP with typography overlay'
       },
-      'node-compile': {
-        type: 'Phase 5: Responsive HTML5 Document',
+      'compile': {
+        badge: 'Step 6 • Phase 5',
+        title: 'Standalone HTML5 Compiler',
+        subtitle: 'Semantic Document & Schema.org JSON-LD',
         description: 'Compiles clean, responsive semantic HTML5 documents embedded with Schema.org JSON-LD Article and FAQPage structures.',
-        fields: [
-          { label: 'Standard', value: 'HTML5 Semantic + Schema.org JSON-LD' },
-          { label: 'Output File', value: 'output/<slug>/final_output.html' },
-          { label: 'Assets', value: 'Self-contained relative WebP assets' }
-        ]
+        specs: [
+          { label: 'Document Format:', value: 'HTML5 Semantic + Modern Responsive Grid' },
+          { label: 'Structured Data:', value: 'Schema.org Article & FAQPage JSON-LD' },
+          { label: 'Asset Linking:', value: 'Self-contained relative WebP assets' },
+          { label: 'Output Path:', value: 'output/<slug>/final_output.html' }
+        ],
+        input: 'Transformed sections JSON, rendered images, metadata',
+        output: 'Self-contained final_output.html in article directory'
       },
-      'node-publish': {
-        type: 'Phase 6: Gutenberg WordPress Publisher',
-        description: 'Publishes completed articles to WordPress via REST API with native Gutenberg comment blocks and Rank Math SEO sync.',
-        fields: [
-          { label: 'Protocol', value: 'WordPress REST API (v2)' },
-          { label: 'Block Syntax', value: '<!-- wp:paragraph -->, <!-- wp:heading -->' },
-          { label: 'SEO Integration', value: 'Rank Math REST Meta (Focus Keyword + Description)' }
-        ]
+      'publish': {
+        badge: 'Step 7 • Phase 6',
+        title: 'Gutenberg WordPress Publisher',
+        subtitle: 'WordPress REST API & Native Gutenberg Blocks',
+        description: 'Publishes completed articles to WordPress via REST API with native Gutenberg comment blocks, featured media upload, and Rank Math SEO sync.',
+        specs: [
+          { label: 'API Protocol:', value: 'WordPress REST API v2 (App Passwords)' },
+          { label: 'Block Syntax:', value: '<!-- wp:paragraph -->, <!-- wp:heading -->' },
+          { label: 'SEO Integration:', value: 'Rank Math REST Meta (Focus Keyword & Description)' },
+          { label: 'Default Status:', value: 'Draft / Publish / Pending Review' }
+        ],
+        input: 'Compiled HTML document, featured media, SEO metadata',
+        output: 'Published WordPress Post ID & Live Permalink'
       }
     };
-
-    this.activePhase = 0;
-    this.zoomLevel = 1.0;
-    this.isDraggingNode = false;
-    this.isPanning = false;
-    this.panStartX = 0;
-    this.panStartY = 0;
-    this.scrollStartX = 0;
-    this.scrollStartY = 0;
 
     this.init();
   }
 
   init() {
-    this.setupNodeInteraction();
-    this.setupDrawer();
-    this.setupZoomControls();
-    this.setupCanvasPanning();
-    this.setupRunButton();
+    this.setupNodeClicks();
+    this.setupToolbarButtons();
+    this.selectNode('transform');
+  }
 
-    // Initial render of connectors
-    setTimeout(() => {
-      this.drawConnectors();
-    }, 100);
-
-    // Re-draw when window resizes
-    window.addEventListener('resize', () => {
-      this.drawConnectors();
+  setupNodeClicks() {
+    const cards = document.querySelectorAll('.pipeline-step-card');
+    cards.forEach((card) => {
+      card.addEventListener('click', () => {
+        const nodeKey = card.dataset.node;
+        if (nodeKey) {
+          this.selectNode(nodeKey);
+        }
+      });
     });
   }
 
-  setupRunButton() {
+  selectNode(nodeKey) {
+    const details = this.nodeDetails[nodeKey];
+    if (!details) return;
+
+    this.selectedNodeKey = nodeKey;
+
+    // Highlight active card
+    document.querySelectorAll('.pipeline-step-card').forEach((c) => {
+      c.classList.remove('active-selected');
+    });
+
+    const targetCard = document.querySelector(`.pipeline-step-card[data-node="${nodeKey}"]`);
+    if (targetCard) {
+      targetCard.classList.add('active-selected');
+    }
+
+    // Populate Inspector
+    const badgeEl = document.getElementById('inspector-step-badge');
+    const titleEl = document.getElementById('inspector-title');
+    const subtitleEl = document.getElementById('inspector-subtitle');
+    const descEl = document.getElementById('inspector-desc');
+    const specsEl = document.getElementById('inspector-specs');
+    const inEl = document.getElementById('inspector-input-val');
+    const outEl = document.getElementById('inspector-output-val');
+
+    if (badgeEl) badgeEl.textContent = details.badge;
+    if (titleEl) titleEl.textContent = details.title;
+    if (subtitleEl) subtitleEl.textContent = details.subtitle;
+    if (descEl) descEl.textContent = details.description;
+
+    if (specsEl) {
+      let specsHtml = '';
+      details.specs.forEach((s) => {
+        specsHtml += `
+          <div class="spec-row">
+            <span class="spec-label">${s.label}</span>
+            <span class="spec-val">${s.value}</span>
+          </div>
+        `;
+      });
+      specsEl.innerHTML = specsHtml;
+    }
+
+    if (inEl) inEl.textContent = details.input;
+    if (outEl) outEl.textContent = details.output;
+  }
+
+  setupToolbarButtons() {
     const runBtn = document.getElementById('workflow-run-btn');
     if (runBtn) {
       runBtn.addEventListener('click', async () => {
@@ -135,12 +195,18 @@ class WorkflowManager {
           const res = await fetch('/api/pipeline/start', { method: 'POST' });
           const data = await res.json();
           if (data.ok || data.status === 'success') {
-            if (window.fluentApp) window.fluentApp.showToast('Workflow Started', 'Pipeline execution triggered from n8n canvas.', 'success');
+            if (window.fluentApp) {
+              window.fluentApp.showToast('Workflow Started', 'Pipeline execution triggered from Studio.', 'success');
+            }
           } else {
-            if (window.fluentApp) window.fluentApp.showToast('Notice', data.error || data.message || 'Already running.', 'info');
+            if (window.fluentApp) {
+              window.fluentApp.showToast('Notice', data.error || data.message || 'Already running.', 'info');
+            }
           }
         } catch (e) {
-          if (window.fluentApp) window.fluentApp.showToast('Error', e.message, 'error');
+          if (window.fluentApp) {
+            window.fluentApp.showToast('Error', e.message, 'error');
+          }
         }
       });
     }
@@ -148,209 +214,35 @@ class WorkflowManager {
     const resetBtn = document.getElementById('workflow-reset-btn');
     if (resetBtn) {
       resetBtn.addEventListener('click', () => {
-        if (this.container) {
-          this.container.scrollTo({ left: 0, top: 0, behavior: 'smooth' });
-        }
-        this.setZoom(1.0);
-      });
-    }
-  }
-
-  setupZoomControls() {
-    const zoomIn = document.getElementById('wf-zoom-in');
-    const zoomOut = document.getElementById('wf-zoom-out');
-    const fitView = document.getElementById('wf-fit-view');
-
-    if (zoomIn) zoomIn.addEventListener('click', () => this.setZoom(this.zoomLevel + 0.15));
-    if (zoomOut) zoomOut.addEventListener('click', () => this.setZoom(this.zoomLevel - 0.15));
-    if (fitView) {
-      fitView.addEventListener('click', () => {
-        // Calculate fit scale
-        if (this.container && this.canvas) {
-          const containerWidth = this.container.clientWidth;
-          const scale = Math.max(0.45, Math.min(1.0, (containerWidth - 60) / 2320));
-          this.setZoom(scale);
-          this.container.scrollTo({ left: 0, top: 0, behavior: 'smooth' });
+        this.resetCanvas();
+        if (window.fluentApp) {
+          window.fluentApp.showToast('Studio Reset', 'Visual status indicators reset.', 'info');
         }
       });
-    }
-  }
-
-  setZoom(val) {
-    this.zoomLevel = Math.max(0.5, Math.min(1.5, Math.round(val * 100) / 100));
-    if (this.canvas) {
-      this.canvas.style.transform = `scale(${this.zoomLevel})`;
-    }
-    const label = document.getElementById('wf-zoom-level');
-    if (label) {
-      label.textContent = `${Math.round(this.zoomLevel * 100)}%`;
-    }
-    this.drawConnectors();
-  }
-
-  setupCanvasPanning() {
-    if (!this.container) return;
-
-    this.container.addEventListener('mousedown', (e) => {
-      // Don't pan if clicking inside a node or button
-      if (e.target.closest('.workflow-node') || e.target.closest('.workflow-hud') || e.target.closest('.workflow-drawer')) {
-        return;
-      }
-      this.isPanning = true;
-      this.panStartX = e.clientX;
-      this.panStartY = e.clientY;
-      this.scrollStartX = this.container.scrollLeft;
-      this.scrollStartY = this.container.scrollTop;
-      this.container.style.cursor = 'grabbing';
-    });
-
-    window.addEventListener('mousemove', (e) => {
-      if (!this.isPanning) return;
-      const dx = e.clientX - this.panStartX;
-      const dy = e.clientY - this.panStartY;
-      this.container.scrollLeft = this.scrollStartX - dx;
-      this.container.scrollTop = this.scrollStartY - dy;
-    });
-
-    window.addEventListener('mouseup', () => {
-      if (this.isPanning) {
-        this.isPanning = false;
-        if (this.container) this.container.style.cursor = 'default';
-      }
-    });
-  }
-
-  setupNodeInteraction() {
-    const nodeEls = document.querySelectorAll('.workflow-node');
-
-    nodeEls.forEach((nodeEl) => {
-      let isDragging = false;
-      let startX = 0, startY = 0;
-      let origLeft = 0, origTop = 0;
-      let hasMoved = false;
-
-      nodeEl.addEventListener('mousedown', (e) => {
-        if (e.target.closest('.node-port')) return;
-        isDragging = true;
-        hasMoved = false;
-        startX = e.clientX;
-        startY = e.clientY;
-        origLeft = nodeEl.offsetLeft;
-        origTop = nodeEl.offsetTop;
-        nodeEl.classList.add('dragging');
-        e.stopPropagation();
-      });
-
-      window.addEventListener('mousemove', (e) => {
-        if (!isDragging) return;
-        const dx = (e.clientX - startX) / this.zoomLevel;
-        const dy = (e.clientY - startY) / this.zoomLevel;
-
-        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
-          hasMoved = true;
-        }
-
-        const newLeft = Math.max(10, Math.min(2040, origLeft + dx));
-        const newTop = Math.max(20, Math.min(420, origTop + dy));
-
-        nodeEl.style.left = `${newLeft}px`;
-        nodeEl.style.top = `${newTop}px`;
-
-        this.drawConnectors();
-      });
-
-      window.addEventListener('mouseup', () => {
-        if (isDragging) {
-          isDragging = false;
-          nodeEl.classList.remove('dragging');
-          if (!hasMoved) {
-            // It was a click, open drawer!
-            const nodeId = nodeEl.dataset.node;
-            this.openDrawer(`node-${nodeId}`);
-          }
-        }
-      });
-    });
-  }
-
-  setupDrawer() {
-    if (this.drawerClose) {
-      this.drawerClose.addEventListener('click', () => {
-        this.closeDrawer();
-      });
-    }
-  }
-
-  openDrawer(nodeId) {
-    const details = this.nodeDetails[nodeId];
-    if (!details) return;
-
-    if (this.drawerTitle) this.drawerTitle.textContent = details.type;
-    if (this.drawerType) this.drawerType.textContent = details.description;
-
-    if (this.drawerContent) {
-      let html = `<div class="drawer-fields">`;
-      details.fields.forEach((field) => {
-        html += `
-          <div class="drawer-field-item">
-            <span class="field-label">${field.label}</span>
-            <span class="field-value">${field.value}</span>
-          </div>
-        `;
-      });
-      html += `</div>`;
-      this.drawerContent.innerHTML = html;
-    }
-
-    if (this.drawer) {
-      this.drawer.classList.add('open');
-    }
-  }
-
-  closeDrawer() {
-    if (this.drawer) {
-      this.drawer.classList.remove('open');
     }
   }
 
   drawConnectors() {
-    if (!this.svg || !this.canvas) return;
+    // Retained for backward-compatibility with app.js view switcher
+    this.refreshWires();
+  }
 
-    // Clear existing paths
-    this.svg.innerHTML = '';
+  refreshWires() {
+    const phaseNumber = this.activePhase;
 
-    for (let i = 0; i < this.nodes.length - 1; i++) {
-      const fromNode = document.getElementById(this.nodes[i].id);
-      const toNode = document.getElementById(this.nodes[i + 1].id);
+    this.nodes.forEach((node, idx) => {
+      if (!node.wireBefore) return;
+      const wireEl = document.getElementById(node.wireBefore);
+      if (!wireEl) return;
 
-      if (!fromNode || !toNode) continue;
+      wireEl.classList.remove('wire-active', 'wire-completed');
 
-      // Coordinates relative to .workflow-canvas using offset properties
-      const startX = fromNode.offsetLeft + fromNode.offsetWidth;
-      const startY = fromNode.offsetTop + (fromNode.offsetHeight / 2);
-
-      const endX = toNode.offsetLeft;
-      const endY = toNode.offsetTop + (toNode.offsetHeight / 2);
-
-      // Smooth horizontal cubic Bézier curve
-      const dx = Math.max(50, Math.abs(endX - startX) * 0.52);
-
-      const pathData = `M ${startX} ${startY} C ${startX + dx} ${startY}, ${endX - dx} ${endY}, ${endX} ${endY}`;
-
-      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-      path.setAttribute('d', pathData);
-      path.setAttribute('class', 'workflow-connector-line');
-      path.id = `line-${this.nodes[i].id}-to-${this.nodes[i + 1].id}`;
-
-      // Status-based wire highlighting
-      if (this.activePhase === this.nodes[i + 1].phase) {
-        path.classList.add('line-active');
-      } else if (this.nodes[i + 1].phase < this.activePhase) {
-        path.classList.add('line-completed');
+      if (node.phase === phaseNumber) {
+        wireEl.classList.add('wire-active');
+      } else if (node.phase < phaseNumber) {
+        wireEl.classList.add('wire-completed');
       }
-
-      this.svg.appendChild(path);
-    }
+    });
   }
 
   updateFromProgress(status) {
@@ -358,45 +250,65 @@ class WorkflowManager {
     this.activePhase = phaseNumber;
 
     this.nodes.forEach((node) => {
-      const nodeEl = document.getElementById(node.id);
-      if (!nodeEl) return;
+      const cardEl = document.getElementById(node.id);
+      if (!cardEl) return;
 
-      const pill = nodeEl.querySelector('.node-status-pill');
+      const pill = cardEl.querySelector('.step-status-pill');
       const pillText = pill ? pill.querySelector('.pill-text') : null;
 
-      nodeEl.classList.remove('node-running', 'node-completed', 'node-error');
+      cardEl.classList.remove('node-running', 'node-completed', 'node-error');
       if (pill) {
-        pill.className = 'node-status-pill';
+        pill.className = 'step-status-pill';
       }
 
       if (status.state === 'error' && node.phase === phaseNumber) {
-        nodeEl.classList.add('node-error');
+        cardEl.classList.add('node-error');
         if (pill) pill.classList.add('status-error');
         if (pillText) pillText.textContent = 'Failed';
       } else if (status.state === 'running' && node.phase === phaseNumber) {
-        nodeEl.classList.add('node-running');
+        cardEl.classList.add('node-running');
         if (pill) pill.classList.add('status-active');
         if (pillText) pillText.textContent = 'Running...';
       } else if (node.phase < phaseNumber || status.state === 'completed') {
-        nodeEl.classList.add('node-completed');
-        if (pill) pill.classList.add('status-complete');
-        if (pillText) pillText.textContent = 'Success';
+        cardEl.classList.add('node-completed');
+        if (pill) pill.classList.add('status-completed');
+        if (pillText) pillText.textContent = 'Completed';
       } else {
         if (pill) pill.classList.add('status-idle');
         if (pillText) pillText.textContent = 'Idle';
       }
     });
 
-    this.drawConnectors();
+    this.refreshWires();
   }
 
   resetCanvas() {
     this.activePhase = 0;
-    this.setZoom(1.0);
-    if (this.container) {
-      this.container.scrollTo({ left: 0, top: 0, behavior: 'smooth' });
-    }
-    this.drawConnectors();
+    this.nodes.forEach((node) => {
+      const cardEl = document.getElementById(node.id);
+      if (!cardEl) return;
+      cardEl.classList.remove('node-running', 'node-completed', 'node-error');
+
+      const pill = cardEl.querySelector('.step-status-pill');
+      const pillText = pill ? pill.querySelector('.pill-text') : null;
+      if (pill) {
+        pill.className = 'step-status-pill';
+        if (node.key === 'input') {
+          pill.classList.add('status-ready');
+          if (pillText) pillText.textContent = 'Ready';
+        } else {
+          pill.classList.add('status-idle');
+          if (pillText) pillText.textContent = 'Idle';
+        }
+      }
+    });
+
+    // Reset wires
+    document.querySelectorAll('.pipeline-wire').forEach((w) => {
+      w.classList.remove('wire-active', 'wire-completed');
+    });
+
+    this.selectNode('input');
   }
 }
 
