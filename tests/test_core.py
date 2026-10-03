@@ -36,10 +36,27 @@ class TestCoreModules(unittest.TestCase):
         self.assertEqual(w_fhd, 1920)
         self.assertEqual(h_fhd, 1080)
 
+        # Named Resolution Presets
+        w_land, h_land = resolve_dimensions("landscape_16_9")
+        self.assertEqual(w_land, 1200)
+        self.assertEqual(h_land, 675)
+
+        w_og, h_og = resolve_dimensions("opengraph_1200_630")
+        self.assertEqual(w_og, 1200)
+        self.assertEqual(h_og, 630)
+
+        w_sq, h_sq = resolve_dimensions("square_1_1")
+        self.assertEqual(w_sq, 1024)
+        self.assertEqual(h_sq, 1024)
+
         # Custom WIDTHxHEIGHT
         w_cust, h_cust = resolve_dimensions("1000x1500")
         self.assertEqual(w_cust, 1000)
         self.assertEqual(h_cust, 1500)
+
+        w_c2, h_c2 = resolve_dimensions("1600x900")
+        self.assertEqual(w_c2, 1600)
+        self.assertEqual(h_c2, 900)
 
     def test_checkpoint_manager(self):
         """Test SQLite checkpoint persistence and retrieval."""

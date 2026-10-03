@@ -261,6 +261,8 @@ class FluentApp {
       btnSingleStart.addEventListener('click', async () => {
         const urlInput = document.getElementById('single-run-url');
         const publishWp = document.getElementById('single-run-publish-wp').checked;
+        const formatSelect = document.getElementById('single-run-format');
+        const articleFormat = formatSelect ? formatSelect.value : 'hybrid';
         const targetUrl = urlInput.value.trim();
 
         if (!targetUrl) {
@@ -275,7 +277,7 @@ class FluentApp {
           const res = await fetch('/api/pipeline/run-single', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: targetUrl, publish_wp: publishWp })
+            body: JSON.stringify({ url: targetUrl, publish_wp: publishWp, article_format: articleFormat })
           });
 
           const data = await res.json();
@@ -603,19 +605,102 @@ class FluentApp {
   // VISUAL STUDIO & PROMPT ENHANCER
   // =========================================================================
   setupVisuals() {
+    // 1. Article Resolution Custom Toggle
+    const resSelect = document.getElementById('visual-resolution');
+    const customResGroup = document.getElementById('visual-custom-res-group');
+    if (resSelect && customResGroup) {
+      resSelect.addEventListener('change', () => {
+        customResGroup.style.display = resSelect.value === 'custom' ? 'grid' : 'none';
+      });
+    }
+
+    // 2. Feature Resolution Custom Toggle
+    const featResSelect = document.getElementById('visual-feature-resolution');
+    const customFeatResGroup = document.getElementById('visual-custom-feature-res-group');
+    if (featResSelect && customFeatResGroup) {
+      featResSelect.addEventListener('change', () => {
+        customFeatResGroup.style.display = featResSelect.value === 'custom' ? 'grid' : 'none';
+      });
+    }
+
+    // 3. Visual Art Style Custom Prompt Toggle
+    const styleSelect = document.getElementById('visual-style');
+    const customStyleGroup = document.getElementById('visual-custom-style-group');
+    if (styleSelect && customStyleGroup) {
+      styleSelect.addEventListener('change', () => {
+        customStyleGroup.style.display = styleSelect.value === 'custom' ? 'block' : 'none';
+      });
+    }
+
+    // 4. Content Format Help Text & Sync
+    const formatSelect = document.getElementById('visual-article-format');
+    const formatHelp = document.getElementById('visual-format-help');
+    const formatDescMap = {
+      hybrid: 'Rich explanatory paragraphs followed by an actionable key takeaways / bullet list.',
+      point_wise: 'Concise context introduction followed by 4–6 scannable bullet points and takeaways.',
+      paragraphs: 'Traditional in-depth narrative paragraphs (2–4 comprehensive paragraphs per section).',
+      subheadings: 'Main H2 sections divided into 2–3 H3 subheadings with focused explanations.'
+    };
+    if (formatSelect) {
+      formatSelect.addEventListener('change', () => {
+        if (formatHelp && formatDescMap[formatSelect.value]) {
+          formatHelp.textContent = formatDescMap[formatSelect.value];
+        }
+        const settingFmt = document.getElementById('setting-article-format');
+        if (settingFmt) settingFmt.value = formatSelect.value;
+        const singleFmt = document.getElementById('single-run-format');
+        if (singleFmt) singleFmt.value = formatSelect.value;
+      });
+    }
+
+    // 5. Save Visual Settings Handler
     const btnSave = document.getElementById('btn-save-visual-settings');
     if (btnSave) {
       btnSave.addEventListener('click', async () => {
+        // Resolve section image resolution
+        let sectionRes = resSelect ? resSelect.value : 'landscape_16_9';
+        if (sectionRes === 'custom') {
+          const w = parseInt(document.getElementById('visual-custom-res-w').value, 10) || 1200;
+          const h = parseInt(document.getElementById('visual-custom-res-h').value, 10) || 675;
+          sectionRes = `${w}x${h}`;
+        }
+
+        // Resolve featured image resolution
+        let featRes = featResSelect ? featResSelect.value : 'landscape_16_9';
+        if (featRes === 'custom') {
+          const fw = parseInt(document.getElementById('visual-custom-feat-w').value, 10) || 1200;
+          const fh = parseInt(document.getElementById('visual-custom-feat-h').value, 10) || 630;
+          featRes = `${fw}x${fh}`;
+        }
+
         const payload = {
           image_engine: document.getElementById('visual-engine').value,
-          image_resolution_preset: document.getElementById('visual-resolution').value,
-          visual_style: document.getElementById('visual-style').value,
-          image_type_prompt: document.getElementById('visual-image-type').value,
-          master_image_prompt: document.getElementById('visual-master-prompt').value,
-          negative_prompt: document.getElementById('visual-negative-prompt').value,
+          image_resolution: sectionRes,
+          image_resolution_preset: sectionRes,
+          feature_resolution: featRes,
+          image_type: styleSelect ? styleSelect.value : 'photo',
+          visual_style: styleSelect ? styleSelect.value : 'photo',
+          image_type_custom: document.getElementById('visual-custom-style-prompt') ? document.getElementById('visual-custom-style-prompt').value.trim() : '',
+          image_type_prompt: document.getElementById('visual-image-type').value.trim(),
+          master_image_prompt: document.getElementById('visual-master-prompt').value.trim(),
+          negative_prompt: document.getElementById('visual-negative-prompt').value.trim(),
+
+          // Featured Image & Title Writer (OpenCV)
+          feature_image_master_prompt: document.getElementById('visual-feature-master-prompt') ? document.getElementById('visual-feature-master-prompt').value.trim() : '',
+          feature_text_overlay: document.getElementById('visual-feature-text-overlay') ? document.getElementById('visual-feature-text-overlay').checked : true,
+          heading_text_overlay: document.getElementById('visual-heading-text-overlay') ? document.getElementById('visual-heading-text-overlay').checked : false,
+          render_font_family: document.getElementById('visual-font-family') ? document.getElementById('visual-font-family').value : 'arial.ttf',
+          render_header_font_size: parseInt(document.getElementById('visual-font-size') ? document.getElementById('visual-font-size').value : 48, 10) || 48,
+          render_scrim_enabled: document.getElementById('visual-scrim-enabled') ? document.getElementById('visual-scrim-enabled').checked : true,
+
+          // Content Format & Master Text
+          article_format: formatSelect ? formatSelect.value : 'hybrid',
+          master_text_prompt: document.getElementById('visual-master-text-prompt') ? document.getElementById('visual-master-text-prompt').value.trim() : '',
+
+          // Pinterest Pin Settings
           generate_pinterest_pin: document.getElementById('visual-pinterest-enabled').checked,
           pinterest_pin_style: document.getElementById('visual-pin-style').value,
-          master_pin_prompt: document.getElementById('visual-master-pin-prompt').value
+          master_pin_prompt: document.getElementById('visual-master-pin-prompt').value.trim()
         };
 
         try {
@@ -625,8 +710,11 @@ class FluentApp {
             body: JSON.stringify(payload)
           });
           const data = await res.json();
-          if (data.status === 'success') {
-            this.showToast('Visuals Saved', 'Image synthesis settings updated.', 'success');
+          if (data.status === 'success' || data.ok) {
+            this.showToast('Visual Settings Saved', 'Image resolutions, custom styles, featured hero and title writer updated.', 'success');
+            await this.loadSettings();
+          } else {
+            this.showToast('Save Error', data.message || 'Could not save settings.', 'error');
           }
         } catch (e) {
           this.showToast('Error', e.message, 'error');
@@ -862,21 +950,126 @@ class FluentApp {
     try {
       const res = await fetch('/api/settings');
       if (!res.ok) return;
-      const cfg = await res.json();
+      const data = await res.json();
+      const cfg = data.settings || data;
       this.settings = cfg;
 
-      // Populate Visual Studio
-      if (document.getElementById('visual-engine')) document.getElementById('visual-engine').value = cfg.image_engine || 'pollinations';
-      if (document.getElementById('visual-resolution')) document.getElementById('visual-resolution').value = cfg.image_resolution_preset || 'landscape_16_9';
-      if (document.getElementById('visual-style')) document.getElementById('visual-style').value = cfg.visual_style || 'photorealistic';
+      // ── Populate Visual Studio: Engine, Resolution, Style ──
+      if (document.getElementById('visual-engine')) {
+        document.getElementById('visual-engine').value = cfg.image_engine || 'pollinations';
+      }
+
+      // Section Resolution & Custom Dimensions
+      const sectionRes = cfg.image_resolution || cfg.image_resolution_preset || 'landscape_16_9';
+      const knownSectionPresets = ['landscape_16_9', 'square_1_1', 'portrait_4_5', 'vertical_9_16', 'banner_3_1'];
+      const resSelect = document.getElementById('visual-resolution');
+      const customResGroup = document.getElementById('visual-custom-res-group');
+      if (resSelect) {
+        if (knownSectionPresets.includes(sectionRes)) {
+          resSelect.value = sectionRes;
+          if (customResGroup) customResGroup.style.display = 'none';
+        } else if (sectionRes.includes('x') || sectionRes.includes('X')) {
+          resSelect.value = 'custom';
+          if (customResGroup) customResGroup.style.display = 'grid';
+          const parts = sectionRes.toLowerCase().split('x');
+          if (document.getElementById('visual-custom-res-w')) document.getElementById('visual-custom-res-w').value = parts[0] || 1200;
+          if (document.getElementById('visual-custom-res-h')) document.getElementById('visual-custom-res-h').value = parts[1] || 675;
+        } else {
+          resSelect.value = 'landscape_16_9';
+          if (customResGroup) customResGroup.style.display = 'none';
+        }
+      }
+
+      // Featured Resolution & Custom Dimensions
+      const featRes = cfg.feature_resolution || 'landscape_16_9';
+      const knownFeatPresets = ['landscape_16_9', 'opengraph_1200_630', 'fhd_16_9', 'banner_3_1'];
+      const featSelect = document.getElementById('visual-feature-resolution');
+      const customFeatGroup = document.getElementById('visual-custom-feature-res-group');
+      if (featSelect) {
+        if (knownFeatPresets.includes(featRes)) {
+          featSelect.value = featRes;
+          if (customFeatGroup) customFeatGroup.style.display = 'none';
+        } else if (featRes.includes('x') || featRes.includes('X')) {
+          featSelect.value = 'custom';
+          if (customFeatGroup) customFeatGroup.style.display = 'grid';
+          const fparts = featRes.toLowerCase().split('x');
+          if (document.getElementById('visual-custom-feat-w')) document.getElementById('visual-custom-feat-w').value = fparts[0] || 1200;
+          if (document.getElementById('visual-custom-feat-h')) document.getElementById('visual-custom-feat-h').value = fparts[1] || 630;
+        } else {
+          featSelect.value = 'landscape_16_9';
+          if (customFeatGroup) customFeatGroup.style.display = 'none';
+        }
+      }
+
+      // Visual Art Style & Custom Prompt
+      const styleVal = cfg.image_type || cfg.visual_style || 'photorealistic';
+      const styleSelect = document.getElementById('visual-style');
+      const customStyleGroup = document.getElementById('visual-custom-style-group');
+      if (styleSelect) {
+        styleSelect.value = styleVal;
+        if (customStyleGroup) {
+          customStyleGroup.style.display = styleVal === 'custom' ? 'block' : 'none';
+        }
+      }
+      if (document.getElementById('visual-custom-style-prompt')) {
+        document.getElementById('visual-custom-style-prompt').value = cfg.image_type_custom || '';
+      }
+
       if (document.getElementById('visual-image-type')) document.getElementById('visual-image-type').value = cfg.image_type_prompt || '';
       if (document.getElementById('visual-master-prompt')) document.getElementById('visual-master-prompt').value = cfg.master_image_prompt || '';
       if (document.getElementById('visual-negative-prompt')) document.getElementById('visual-negative-prompt').value = cfg.negative_prompt || '';
+
+      // ── Populate Featured Image & Title Writer ──
+      if (document.getElementById('visual-feature-master-prompt')) {
+        document.getElementById('visual-feature-master-prompt').value = cfg.feature_image_master_prompt || '';
+      }
+      if (document.getElementById('visual-feature-text-overlay')) {
+        document.getElementById('visual-feature-text-overlay').checked = cfg.feature_text_overlay !== false;
+      }
+      if (document.getElementById('visual-heading-text-overlay')) {
+        document.getElementById('visual-heading-text-overlay').checked = !!cfg.heading_text_overlay;
+      }
+      if (document.getElementById('visual-font-family')) {
+        document.getElementById('visual-font-family').value = cfg.render_font_family || 'arial.ttf';
+      }
+      if (document.getElementById('visual-font-size')) {
+        document.getElementById('visual-font-size').value = cfg.render_header_font_size || 48;
+      }
+      if (document.getElementById('visual-scrim-enabled')) {
+        document.getElementById('visual-scrim-enabled').checked = cfg.render_scrim_enabled !== false;
+      }
+
+      // ── Populate Content Architecture & Format ──
+      const activeFmt = cfg.article_format || 'hybrid';
+      if (document.getElementById('visual-article-format')) {
+        document.getElementById('visual-article-format').value = activeFmt;
+      }
+      if (document.getElementById('setting-article-format')) {
+        document.getElementById('setting-article-format').value = activeFmt;
+      }
+      if (document.getElementById('single-run-format')) {
+        document.getElementById('single-run-format').value = activeFmt;
+      }
+      if (document.getElementById('visual-master-text-prompt')) {
+        document.getElementById('visual-master-text-prompt').value = cfg.master_text_prompt || '';
+      }
+      const formatHelp = document.getElementById('visual-format-help');
+      const formatDescMap = {
+        hybrid: 'Rich explanatory paragraphs followed by an actionable key takeaways / bullet list.',
+        point_wise: 'Concise context introduction followed by 4–6 scannable bullet points and takeaways.',
+        paragraphs: 'Traditional in-depth narrative paragraphs (2–4 comprehensive paragraphs per section).',
+        subheadings: 'Main H2 sections divided into 2–3 H3 subheadings with focused explanations.'
+      };
+      if (formatHelp && formatDescMap[activeFmt]) {
+        formatHelp.textContent = formatDescMap[activeFmt];
+      }
+
+      // ── Populate Pinterest Pin ──
       if (document.getElementById('visual-pinterest-enabled')) document.getElementById('visual-pinterest-enabled').checked = !!cfg.generate_pinterest_pin;
       if (document.getElementById('visual-pin-style')) document.getElementById('visual-pin-style').value = cfg.pinterest_pin_style || 'modern_minimalist';
       if (document.getElementById('visual-master-pin-prompt')) document.getElementById('visual-master-pin-prompt').value = cfg.master_pin_prompt || '';
 
-      // Populate WordPress Hub
+      // ── Populate WordPress Hub ──
       if (document.getElementById('wp-site-url')) document.getElementById('wp-site-url').value = cfg.wordpress_url || '';
       if (document.getElementById('wp-username')) document.getElementById('wp-username').value = cfg.wordpress_username || '';
       if (document.getElementById('wp-app-password')) document.getElementById('wp-app-password').value = cfg.wordpress_app_password || '';
@@ -885,13 +1078,12 @@ class FluentApp {
       if (document.getElementById('wp-author-id')) document.getElementById('wp-author-id').value = cfg.wordpress_author_id || 1;
       if (document.getElementById('wp-rank-math-sync')) document.getElementById('wp-rank-math-sync').checked = cfg.rank_math_sync !== false;
 
-      // Populate Settings View
+      // ── Populate Settings View ──
       if (document.getElementById('setting-execution-mode')) document.getElementById('setting-execution-mode').value = cfg.execution_mode || 'online';
       if (document.getElementById('setting-output-dir')) document.getElementById('setting-output-dir').value = cfg.output_dir || 'output';
       if (document.getElementById('setting-auto-browser')) document.getElementById('setting-auto-browser').checked = cfg.auto_launch_browser !== false;
       if (document.getElementById('setting-gemini-key')) document.getElementById('setting-gemini-key').value = cfg.gemini_api_key || '';
       if (document.getElementById('setting-gemini-model')) document.getElementById('setting-gemini-model').value = cfg.gemini_model || 'gemini-2.5-flash';
-      if (document.getElementById('setting-article-format')) document.getElementById('setting-article-format').value = cfg.article_format || 'hybrid';
       if (document.getElementById('setting-master-text-prompt')) document.getElementById('setting-master-text-prompt').value = cfg.master_text_prompt || '';
       if (document.getElementById('setting-gpu-url')) document.getElementById('setting-gpu-url').value = cfg.custom_gpu_endpoint || '';
       if (document.getElementById('setting-gpu-token')) document.getElementById('setting-gpu-token').value = cfg.custom_gpu_token || '';

@@ -17,6 +17,7 @@ from config.constants import (
     DEFAULT_CONFIG_PATH,
     IMAGE_FORMATS,
     IMAGE_TYPES,
+    NAMED_RESOLUTIONS,
     RESOLUTION_PRESETS,
 )
 
@@ -26,15 +27,16 @@ _cached_config: Dict[str, Any] = {}
 
 def resolve_dimensions(resolution_str: str, aspect: float = 9 / 16) -> Tuple[int, int]:
     """
-    Resolves a preset or custom resolution string into concrete (width, height) integers.
-    Presets:
-      'sd'  -> 854w  x (854 * aspect)h
-      'hd'  -> 1200w x (1200 * aspect)h
-      'fhd' -> 1920w x (1920 * aspect)h
-      '2k'  -> 2560w x (2560 * aspect)h
-    Custom format: 'WIDTHxHEIGHT' (e.g. '1000x1500') uses exact dimensions without aspect ratio.
+    Resolves a preset, named resolution, or custom resolution string into concrete (width, height) integers.
+    Supports:
+      - Named ratios: 'landscape_16_9', 'opengraph_1200_630', 'square_1_1', 'portrait_4_5', 'vertical_9_16', 'banner_3_1'
+      - Standard presets: 'sd', 'hd', 'fhd', '2k'
+      - Custom format: 'WIDTHxHEIGHT' (e.g. '1920x1080', '1600x900', '1000x1500')
     """
     res = (resolution_str or "hd").strip().lower()
+    if res in NAMED_RESOLUTIONS:
+        return NAMED_RESOLUTIONS[res]
+
     custom_match = CUSTOM_RES_REGEX.match(res)
     if custom_match:
         w = max(64, min(8000, int(custom_match.group(1))))

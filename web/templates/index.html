@@ -667,9 +667,15 @@
           </div>
 
           <div class="visuals-grid">
-            <!-- Left Column: Image Engine & Styles -->
+            <!-- Card 1: Article & Section Images -->
             <div class="fluent-card">
-              <h3 class="card-heading">AI Image Engine & Styles</h3>
+              <div class="card-header-flex">
+                <div>
+                  <h3 class="card-heading">Section & Body Images</h3>
+                  <p class="card-subheading">AI image synthesis engine, section resolutions, and visual style directives</p>
+                </div>
+                <span class="fluent-badge">Phase 3</span>
+              </div>
               
               <div class="fluent-form-group">
                 <label class="fluent-label">Synthesis Engine</label>
@@ -681,14 +687,27 @@
               </div>
 
               <div class="fluent-form-group">
-                <label class="fluent-label">Article Image Resolution Preset</label>
+                <label class="fluent-label">Article Image Resolution</label>
                 <select id="visual-resolution" class="fluent-select">
                   <option value="landscape_16_9">Landscape 16:9 (1200 x 675) — Standard Blog</option>
                   <option value="square_1_1">Square 1:1 (1024 x 1024) — Social / Multi-purpose</option>
                   <option value="portrait_4_5">Portrait 4:5 (800 x 1000) — Mobile Rich</option>
                   <option value="vertical_9_16">Vertical 9:16 (1080 x 1920) — Story / Mobile</option>
                   <option value="banner_3_1">Banner 3:1 (1200 x 400) — Wide Hero</option>
+                  <option value="custom">Custom Dimensions (Width x Height)...</option>
                 </select>
+              </div>
+
+              <!-- Custom Dimensions for Section Images -->
+              <div id="visual-custom-res-group" class="fluent-form-grid" style="display: none; margin-top: 6px; margin-bottom: 12px;">
+                <div class="fluent-form-group">
+                  <label class="fluent-label">Custom Width (px)</label>
+                  <input type="number" id="visual-custom-res-w" class="fluent-input" placeholder="1200" min="64" max="8000" value="1200">
+                </div>
+                <div class="fluent-form-group">
+                  <label class="fluent-label">Custom Height (px)</label>
+                  <input type="number" id="visual-custom-res-h" class="fluent-input" placeholder="675" min="64" max="8000" value="675">
+                </div>
               </div>
 
               <div class="fluent-form-group">
@@ -700,37 +719,175 @@
                   <option value="illustration">Digital Editorial Illustration</option>
                   <option value="neon_cyberpunk">Neon Cyberpunk (Vibrant dark palette)</option>
                   <option value="vintage">Vintage Retro (Film grain, warm Kodachrome)</option>
-                  <option value="anime">Anime / Manga Art Style</option>
+                  <option value="watercolor">Watercolor & Ink Illustration</option>
+                  <option value="3d_render">3D Isometric / Clay Render</option>
+                  <option value="custom">Custom Art Style Directive (User Defined)...</option>
                 </select>
               </div>
 
-              <div class="fluent-form-group">
-                <label class="fluent-label">Image Type Prompt (Modifier)</label>
-                <input type="text" id="visual-image-type" class="fluent-input" placeholder="e.g. detailed infographic, 3D product render, high-fashion editorial">
-                <span class="fluent-help-text">Guides the compositional nature of every generated image.</span>
+              <!-- Custom Art Style Prompt -->
+              <div id="visual-custom-style-group" class="fluent-form-group" style="display: none; margin-top: 6px; margin-bottom: 12px;">
+                <label class="fluent-label">Custom Art Style Directive / Prompt</label>
+                <textarea id="visual-custom-style-prompt" class="fluent-textarea" rows="2" placeholder="e.g. moody oil painting with visible brushstrokes, chiaroscuro lighting, rich earthy palette..."></textarea>
+                <span class="fluent-help-text">This custom art style prompt will be automatically injected into every image prompt.</span>
               </div>
-            </div>
-
-            <!-- Right Column: Master Prompts & Pinterest Pins -->
-            <div class="fluent-card">
-              <h3 class="card-heading">Master Prompts & Pinterest Pin Engine</h3>
 
               <div class="fluent-form-group">
-                <label class="fluent-label">Master Image Prompt (Prepended to ALL image prompts)</label>
-                <textarea id="visual-master-prompt" class="fluent-textarea" rows="3" placeholder="e.g., highly aesthetic, professional color grading, studio lighting, hyper-detailed, award-winning photography"></textarea>
+                <label class="fluent-label">Image Type Modifier (Composition)</label>
+                <input type="text" id="visual-image-type" class="fluent-input" placeholder="e.g. detailed infographic, 3D product render, high-fashion editorial">
+                <span class="fluent-help-text">Guides the compositional nature of section images.</span>
+              </div>
+
+              <div class="fluent-form-group">
+                <label class="fluent-label">Global Master Image Prompt (Prepended to ALL images)</label>
+                <textarea id="visual-master-prompt" class="fluent-textarea" rows="2" placeholder="e.g., highly aesthetic, professional color grading, studio lighting, hyper-detailed, award-winning photography"></textarea>
               </div>
 
               <div class="fluent-form-group">
                 <label class="fluent-label">Negative Prompt</label>
                 <input type="text" id="visual-negative-prompt" class="fluent-input" placeholder="ugly, blurry, low quality, distorted, extra limbs, watermark, text">
               </div>
+            </div>
+
+            <!-- Card 2: Featured Hero Image & Title Writer (OpenCV) -->
+            <div class="fluent-card">
+              <div class="card-header-flex">
+                <div>
+                  <h3 class="card-heading">Featured Hero Image & Title Writer</h3>
+                  <p class="card-subheading">Main cover image displayed at the top of the article and WordPress hero banner</p>
+                </div>
+                <span class="fluent-badge badge-accent">Phase 3 & 4</span>
+              </div>
+
+              <div class="fluent-form-group">
+                <label class="fluent-label">Featured Image Resolution</label>
+                <select id="visual-feature-resolution" class="fluent-select">
+                  <option value="landscape_16_9">Landscape 16:9 (1200 x 675) — Standard Blog Banner</option>
+                  <option value="opengraph_1200_630">Social / OpenGraph (1200 x 630) — WordPress & Facebook</option>
+                  <option value="fhd_16_9">Full HD 16:9 (1920 x 1080) — High-Resolution Hero</option>
+                  <option value="banner_3_1">Panoramic Banner (1200 x 400) — Wide Header</option>
+                  <option value="custom">Custom Dimensions (Width x Height)...</option>
+                </select>
+              </div>
+
+              <!-- Custom Dimensions for Featured Image -->
+              <div id="visual-custom-feature-res-group" class="fluent-form-grid" style="display: none; margin-top: 6px; margin-bottom: 12px;">
+                <div class="fluent-form-group">
+                  <label class="fluent-label">Featured Width (px)</label>
+                  <input type="number" id="visual-custom-feat-w" class="fluent-input" placeholder="1200" min="64" max="8000" value="1200">
+                </div>
+                <div class="fluent-form-group">
+                  <label class="fluent-label">Featured Height (px)</label>
+                  <input type="number" id="visual-custom-feat-h" class="fluent-input" placeholder="630" min="64" max="8000" value="630">
+                </div>
+              </div>
+
+              <div class="fluent-form-group">
+                <label class="fluent-label">Featured Image Master Prompt (Hero Banner Directive)</label>
+                <textarea id="visual-feature-master-prompt" class="fluent-textarea" rows="2" placeholder="e.g. epic wide-angle establishing shot, hero banner composition, dramatic cinematic depth of field, award-winning photography"></textarea>
+                <span class="fluent-help-text">Dedicated visual directive applied specifically to the Featured Hero Image.</span>
+              </div>
 
               <div class="fluent-form-divider"></div>
+
+              <!-- Title Writer Overlay Controls -->
+              <div class="fluent-toggle-row">
+                <div>
+                  <div class="toggle-title">Featured Image Title Writer (OpenCV Typography)</div>
+                  <div class="toggle-desc">Automatically renders the article title with drop shadows onto the featured image</div>
+                </div>
+                <label class="fluent-switch">
+                  <input type="checkbox" id="visual-feature-text-overlay" checked>
+                  <span class="fluent-slider"></span>
+                </label>
+              </div>
+
+              <div class="fluent-toggle-row" style="margin-top: 6px;">
+                <div>
+                  <div class="toggle-title">Section Headings Text Overlay</div>
+                  <div class="toggle-desc">Also overlays H2 section headings onto body section images</div>
+                </div>
+                <label class="fluent-switch">
+                  <input type="checkbox" id="visual-heading-text-overlay">
+                  <span class="fluent-slider"></span>
+                </label>
+              </div>
+
+              <div id="visual-typography-options" style="margin-top: 14px;">
+                <div class="fluent-form-grid">
+                  <div class="fluent-form-group">
+                    <label class="fluent-label">Title Typography Font</label>
+                    <select id="visual-font-family" class="fluent-select">
+                      <option value="arial.ttf">Arial Bold</option>
+                      <option value="segoeui.ttf">Segoe UI Bold (Windows 11 Native)</option>
+                      <option value="Montserrat-ExtraBold.ttf">Montserrat ExtraBold (Modern Editorial)</option>
+                      <option value="Inter-Bold.ttf">Inter Bold (Clean Tech)</option>
+                      <option value="Oswald-Bold.ttf">Oswald Bold (Punchy Display)</option>
+                      <option value="calibri.ttf">Calibri</option>
+                    </select>
+                  </div>
+
+                  <div class="fluent-form-group">
+                    <label class="fluent-label">Title Font Size</label>
+                    <input type="number" id="visual-font-size" class="fluent-input" value="48" min="20" max="96">
+                  </div>
+                </div>
+
+                <div class="fluent-toggle-row" style="margin-top: 8px;">
+                  <div>
+                    <div class="toggle-title">Dark Gradient Scrim Band</div>
+                    <div class="toggle-desc">Renders an elegant bottom darkening band beneath overlaid text for crisp readability</div>
+                  </div>
+                  <label class="fluent-switch">
+                    <input type="checkbox" id="visual-scrim-enabled" checked>
+                    <span class="fluent-slider"></span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <!-- Card 3: Article Content Architecture & Format Style -->
+            <div class="fluent-card">
+              <div class="card-header-flex">
+                <div>
+                  <h3 class="card-heading">Article Content Architecture & Style</h3>
+                  <p class="card-subheading">Choose how the AI models structure and format your generated blog articles</p>
+                </div>
+                <span class="fluent-badge badge-purple">Phase 2</span>
+              </div>
+
+              <div class="fluent-form-group">
+                <label class="fluent-label">Content Structure & Format Style</label>
+                <select id="visual-article-format" class="fluent-select">
+                  <option value="hybrid">Hybrid (Narrative Paragraphs + Actionable Bulleted Key Points)</option>
+                  <option value="point_wise">Point-Wise / Bullet Points (Concise Context + 4–6 Scannable Points)</option>
+                  <option value="paragraphs">Standard Paragraphs Only (In-Depth Traditional Narrative)</option>
+                  <option value="subheadings">Sub-Heading Wise (H2 Sections Divided into Detailed H3 Subsections)</option>
+                </select>
+                <span class="fluent-help-text" id="visual-format-help">Rich explanatory paragraphs followed by an actionable key takeaways / bullet list.</span>
+              </div>
+
+              <div class="fluent-form-group" style="margin-top: 14px;">
+                <label class="fluent-label">Master Text Prompt (Tone & Writing Directive)</label>
+                <textarea id="visual-master-text-prompt" class="fluent-textarea" rows="3" placeholder="e.g. Write in an authoritative, engaging tone with active voice. Include deep analytical explanations and practical real-world examples..."></textarea>
+                <span class="fluent-help-text">Guides the writing persona and quality standards for all generated text.</span>
+              </div>
+            </div>
+
+            <!-- Card 4: Pinterest Pin Engine -->
+            <div class="fluent-card">
+              <div class="card-header-flex">
+                <div>
+                  <h3 class="card-heading">Pinterest Pin Marketing Engine</h3>
+                  <p class="card-subheading">Generate vertical 1000x1500 pins optimized for Pinterest traffic and viral reach</p>
+                </div>
+                <span class="fluent-badge badge-rose">Social</span>
+              </div>
 
               <div class="fluent-toggle-row">
                 <div>
                   <div class="toggle-title">Generate Pinterest Pin</div>
-                  <div class="toggle-desc">Automatically synthesizes vertical 1000x1500 pin image for Pinterest marketing</div>
+                  <div class="toggle-desc">Synthesizes a vertical 1000x1500 marketing pin for each processed article</div>
                 </div>
                 <label class="fluent-switch">
                   <input type="checkbox" id="visual-pinterest-enabled">
@@ -1138,6 +1295,15 @@
           <label class="fluent-label">Target Article URL</label>
           <input type="url" id="single-run-url" class="fluent-input" placeholder="https://example.com/blog/great-article">
           <span class="fluent-help-text">Will be extracted, rewritten, synthesized with images, and compiled.</span>
+        </div>
+        <div class="fluent-form-group">
+          <label class="fluent-label">Article Content Style</label>
+          <select id="single-run-format" class="fluent-select">
+            <option value="hybrid">Hybrid (Narrative Paragraphs + Actionable Bulleted Key Points)</option>
+            <option value="point_wise">Point-Wise / Bullet Points (Concise Context + 4–6 Scannable Points)</option>
+            <option value="paragraphs">Standard Paragraphs Only (In-Depth Traditional Narrative)</option>
+            <option value="subheadings">Sub-Heading Wise (H2 Sections Divided into Detailed H3 Subsections)</option>
+          </select>
         </div>
         <div class="fluent-toggle-row">
           <div>

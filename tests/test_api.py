@@ -72,6 +72,47 @@ class TestRestAPI(unittest.TestCase):
         data = json.loads(response.data)
         self.assertIn("articles", data)
 
+    def test_run_single_validation(self):
+        """POST /api/pipeline/run-single requires valid URL."""
+        res_empty = self.client.post(
+            "/api/pipeline/run-single",
+            json={"url": ""},
+            content_type="application/json"
+        )
+        self.assertEqual(res_empty.status_code, 400)
+
+    def test_custom_visual_settings(self):
+        """POST /api/settings should persist custom resolution, custom style, and featured image."""
+        payload = {
+            "image_resolution": "1600x900",
+            "feature_resolution": "1920x1080",
+            "image_type": "custom",
+            "image_type_custom": "hyper-realistic oil painting, Rembrandt chiaroscuro",
+            "feature_image_master_prompt": "epic wide-angle establishing shot",
+            "feature_text_overlay": True,
+            "render_font_family": "Montserrat-ExtraBold.ttf",
+            "render_header_font_size": 52,
+            "render_scrim_enabled": True,
+            "article_format": "point_wise",
+        }
+        res = self.client.post(
+            "/api/settings",
+            json=payload,
+            content_type="application/json"
+        )
+        self.assertEqual(res.status_code, 200)
+        data = json.loads(res.data)
+        self.assertTrue(data.get("ok"))
+        settings = data.get("settings", {})
+        self.assertEqual(settings.get("image_resolution"), "1600x900")
+        self.assertEqual(settings.get("feature_resolution"), "1920x1080")
+        self.assertEqual(settings.get("render_w"), 1600)
+        self.assertEqual(settings.get("render_h"), 900)
+        self.assertEqual(settings.get("feature_w"), 1920)
+        self.assertEqual(settings.get("feature_h"), 1080)
+        self.assertEqual(settings.get("article_format"), "point_wise")
+
+
 
 if __name__ == "__main__":
     unittest.main()

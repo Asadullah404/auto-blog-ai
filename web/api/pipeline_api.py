@@ -59,3 +59,28 @@ def resume_pipeline():
         return jsonify({"ok": False, "error": "Pipeline is not paused."}), 400
 
     return jsonify({"ok": True, "message": "Pipeline resumed."})
+
+
+@pipeline_bp.route("/run-single", methods=["POST"])
+def run_single():
+    """Runs the pipeline for a single target URL in the background."""
+    from config.settings import save_config
+    data = request.get_json(silent=True) or {}
+    url = (data.get("url") or "").strip()
+    if not url:
+        return jsonify({"ok": False, "status": "error", "message": "Missing target URL."}), 400
+
+    overrides = {}
+    if data.get("article_format"):
+        overrides["article_format"] = data["article_format"]
+    if "publish_wp" in data:
+        overrides["auto_publish"] = bool(data["publish_wp"])
+    if overrides:
+        save_config(overrides)
+
+    started = task_manager.start_pipeline(mode="offline", single_url=url)
+    if not started:
+        return jsonify({"ok": False, "status": "error", "message": "Pipeline is already running."}), 400
+
+    return jsonify({"ok": True, "status": "success", "message": f"Processing launched for {url}", "url": url})
+

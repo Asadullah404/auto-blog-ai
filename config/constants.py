@@ -32,14 +32,27 @@ RESOLUTION_PRESETS = {
     "2k": 2560,
 }
 
+NAMED_RESOLUTIONS = {
+    "landscape_16_9": (1200, 675),
+    "opengraph_1200_630": (1200, 630),
+    "square_1_1": (1024, 1024),
+    "portrait_4_5": (800, 1000),
+    "vertical_9_16": (1080, 1920),
+    "banner_3_1": (1200, 400),
+    "sd": (854, 480),
+    "hd": (1200, 675),
+    "fhd": (1920, 1080),
+    "2k": (2560, 1440),
+}
+
 CUSTOM_RES_REGEX = re.compile(r"^(\d{2,5})\s*[xX]\s*(\d{2,5})$")
 
 # Article Format Configurations
 ARTICLE_FORMAT_LABELS = {
-    "Standard Paragraphs (Narrative)": "paragraphs",
-    "Point-Wise / Bullet Points (Scannable)": "point_wise",
-    "Sub-Heading Wise (H2 + H3 Subsections)": "subheadings",
     "Hybrid (Paragraphs + Bullet Points)": "hybrid",
+    "Point-Wise / Bullet Points (Scannable)": "point_wise",
+    "Standard Paragraphs (Narrative)": "paragraphs",
+    "Sub-Heading Wise (H2 + H3 Subsections)": "subheadings",
 }
 ARTICLE_FORMAT_LABELS_REV = {v: k for k, v in ARTICLE_FORMAT_LABELS.items()}
 
@@ -123,11 +136,11 @@ DEFAULT_CONFIG = {
     "quota_wait_hours": 6,
     
     # Article Transformation & Directives
-    "article_format": "paragraphs",
+    "article_format": "hybrid",
     "master_text_prompt": "",
     
     # AI Image Generation Settings
-    "image_engine": "agy_fallback",          # "agy_fallback" | "pollinations" | "agy_only" | "my_server"
+    "image_engine": "pollinations",          # "agy_fallback" | "pollinations" | "agy_only" | "my_server"
     "server_url": "",                        # Colab / ngrok GPU server (/generate)
     "pollinations_delay": 180,               # seconds between calls
     "img_inter_delay": 8,                    # seconds between successful image calls
@@ -143,11 +156,11 @@ DEFAULT_CONFIG = {
     # Image Output Formats & Resolutions
     "image_format": "webp",
     "image_quality": 88,
-    "image_resolution": "hd",
-    "feature_resolution": "hd",
+    "image_resolution": "landscape_16_9",
+    "feature_resolution": "landscape_16_9",
     "pin_resolution": "1000x1500",
     "heading_text_overlay": False,
-    "feature_text_overlay": False,
+    "feature_text_overlay": True,
     
     # Master Image Prompts & Styles
     "master_image_prompt": "",
@@ -156,6 +169,11 @@ DEFAULT_CONFIG = {
     "image_type_custom": "",
     "feature_image_master_prompt": "",
     "heading_image_master_prompt": "",
+
+    # Typography & Scrim Overlay (OpenCV Title Writer)
+    "render_font_family": "arial.ttf",
+    "render_header_font_size": 48,
+    "render_scrim_enabled": True,
     
     # Pinterest Pin Settings
     "pinterest_pin": False,
