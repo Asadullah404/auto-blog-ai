@@ -17,6 +17,11 @@ token.json
 
 # Generated at runtime — one folder per processed URL, plus its local DB/images
 pipeline_output/
+output/
+temp_input/
+checkpoints/*.db
+*.db-wal
+*.db-shm
 
 # Personal run data — your own URL list
 Links.csv

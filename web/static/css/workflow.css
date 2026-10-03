@@ -1,0 +1,291 @@
+/* ==============================================================================
+   n8n-Inspired Workflow Visualizer — Node Canvas & Pipeline Graph
+   ============================================================================== */
+
+.workflow-canvas {
+  position: relative;
+  width: 100%;
+  min-height: 520px;
+  background-color: var(--bg-mica);
+  background-image: radial-gradient(rgba(255, 255, 255, 0.08) 1.5px, transparent 1.5px);
+  background-size: 24px 24px;
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--border-subtle);
+  padding: 40px;
+  overflow-x: auto;
+  box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.1);
+  margin-bottom: 24px;
+}
+
+body[data-theme="light"] .workflow-canvas {
+  background-image: radial-gradient(rgba(0, 0, 0, 0.08) 1.5px, transparent 1.5px);
+}
+
+.workflow-graph {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 20px;
+  min-width: 1100px;
+  position: relative;
+}
+
+/* ── Node Card ─────────────────────────────────────────────── */
+.wf-node {
+  width: 210px;
+  background: var(--bg-card);
+  backdrop-filter: blur(20px);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+  cursor: pointer;
+  position: relative;
+  transition: all var(--transition-normal);
+  box-shadow: var(--shadow-card);
+  user-select: none;
+}
+
+.wf-node:hover {
+  transform: translateY(-3px);
+  border-color: var(--accent);
+  box-shadow: var(--shadow-hover);
+}
+
+.wf-node.active-running {
+  border-color: var(--accent);
+  box-shadow: 0 0 24px rgba(0, 120, 212, 0.45);
+  animation: node-pulse 2s infinite ease-in-out;
+}
+
+@keyframes node-pulse {
+  0% { box-shadow: 0 0 10px rgba(0, 120, 212, 0.2); }
+  50% { box-shadow: 0 0 28px rgba(0, 120, 212, 0.55); border-color: var(--accent-hover); }
+  100% { box-shadow: 0 0 10px rgba(0, 120, 212, 0.2); }
+}
+
+.wf-node.status-done {
+  border-color: rgba(16, 185, 129, 0.5);
+}
+
+.wf-node.status-done .wf-node-icon {
+  background: rgba(16, 185, 129, 0.15);
+  color: #10b981;
+}
+
+.wf-node.status-error {
+  border-color: rgba(239, 68, 68, 0.5);
+}
+
+.wf-node.status-error .wf-node-icon {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+.wf-node-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.wf-node-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.wf-node-title-group {
+  flex: 1;
+  overflow: hidden;
+}
+
+.wf-node-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wf-node-subtitle {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wf-node-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: var(--radius-pill);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  display: inline-block;
+  margin-top: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-tertiary);
+}
+
+.wf-node.active-running .wf-node-badge {
+  background: var(--accent-light);
+  color: var(--accent);
+}
+
+.wf-node.status-done .wf-node-badge {
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.wf-node.status-error .wf-node-badge {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.wf-node-metrics {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.wf-metric-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.wf-metric-val {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* ── Connector Arrows ──────────────────────────────────────── */
+.wf-connector {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  color: var(--border-default);
+  position: relative;
+  flex-shrink: 0;
+}
+
+.wf-connector svg {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.wf-connector.active {
+  color: var(--accent);
+  filter: drop-shadow(0 0 6px rgba(0, 120, 212, 0.6));
+  animation: pulse-connector 1.5s infinite;
+}
+
+@keyframes pulse-connector {
+  0% { transform: scale(1); opacity: 0.7; }
+  50% { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(1); opacity: 0.7; }
+}
+
+/* ── Node Detail Drawer ────────────────────────────────────── */
+.node-drawer {
+  position: fixed;
+  top: 40px;
+  right: -420px;
+  width: 400px;
+  height: calc(100vh - 40px);
+  background: var(--bg-card);
+  backdrop-filter: blur(28px);
+  border-left: 1px solid var(--border-default);
+  box-shadow: var(--shadow-flyout);
+  z-index: 200;
+  transition: right 0.3s cubic-bezier(0.1, 0.9, 0.2, 1);
+  display: flex;
+  flex-direction: column;
+  padding: 24px;
+}
+
+.node-drawer.open {
+  right: 0;
+}
+
+.drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+.drawer-title {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.drawer-close {
+  background: transparent;
+  border: none;
+  font-size: 20px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+}
+
+.drawer-close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+}
+
+.drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.drawer-section {
+  background: var(--bg-mica);
+  border-radius: var(--radius-md);
+  padding: 14px;
+  border: 1px solid var(--border-subtle);
+}
+
+.drawer-sec-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-tertiary);
+  margin-bottom: 8px;
+}
+
+.drawer-code-block {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 180px;
+  overflow-y: auto;
+}

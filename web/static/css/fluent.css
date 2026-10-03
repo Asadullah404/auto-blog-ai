@@ -1,0 +1,137 @@
+/* ==============================================================================
+   Windows 11 Fluent Design System — Core Tokens & Acrylic Effects
+   ============================================================================== */
+
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+
+:root {
+  /* Common Geometry */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-pill: 9999px;
+
+  /* Typography */
+  --font-family: 'Segoe UI Variable', 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+
+  /* Accent Color (Windows 11 Blue) */
+  --accent: #0078d4;
+  --accent-hover: #0086f0;
+  --accent-active: #006cbe;
+  --accent-light: rgba(0, 120, 212, 0.12);
+  --accent-glow: 0 0 20px rgba(0, 120, 212, 0.35);
+
+  /* Status Colors */
+  --success: #107c41;
+  --success-bg: rgba(16, 124, 65, 0.12);
+  --warning: #ffb900;
+  --warning-bg: rgba(255, 185, 0, 0.12);
+  --danger: #d13438;
+  --danger-bg: rgba(209, 52, 56, 0.12);
+  --info: #0284c7;
+  --info-bg: rgba(2, 132, 199, 0.12);
+
+  /* Elevation Shadows */
+  --shadow-flyout: 0 8px 32px rgba(0, 0, 0, 0.24);
+  --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.08);
+  --shadow-hover: 0 8px 24px rgba(0, 0, 0, 0.14);
+  --transition-fast: 0.15s cubic-bezier(0.1, 0.9, 0.2, 1);
+  --transition-normal: 0.25s cubic-bezier(0.1, 0.9, 0.2, 1);
+}
+
+/* ── Dark Theme (Default) ──────────────────────────────────── */
+body[data-theme="dark"] {
+  --bg-mica: #1a1a1a;
+  --bg-app: #202020;
+  --bg-sidebar: #1e1e1e;
+  --bg-card: rgba(38, 38, 38, 0.85);
+  --bg-card-hover: rgba(48, 48, 48, 0.95);
+  --bg-input: rgba(30, 30, 30, 0.9);
+  --bg-overlay: rgba(15, 15, 15, 0.7);
+
+  --border-subtle: rgba(255, 255, 255, 0.07);
+  --border-default: rgba(255, 255, 255, 0.12);
+  --border-focus: var(--accent);
+
+  --text-primary: #ffffff;
+  --text-secondary: #cccccc;
+  --text-tertiary: #8c8c8c;
+  --text-disabled: #555555;
+
+  --acrylic-fallback: #242424;
+}
+
+/* ── Light Theme ───────────────────────────────────────────── */
+body[data-theme="light"] {
+  --bg-mica: #f3f3f3;
+  --bg-app: #f9f9f9;
+  --bg-sidebar: #f0f0f0;
+  --bg-card: rgba(255, 255, 255, 0.85);
+  --bg-card-hover: rgba(255, 255, 255, 0.98);
+  --bg-input: #ffffff;
+  --bg-overlay: rgba(240, 240, 240, 0.6);
+
+  --border-subtle: rgba(0, 0, 0, 0.06);
+  --border-default: rgba(0, 0, 0, 0.12);
+  --border-focus: var(--accent);
+
+  --text-primary: #111111;
+  --text-secondary: #444444;
+  --text-tertiary: #777777;
+  --text-disabled: #aaaaaa;
+
+  --acrylic-fallback: #ffffff;
+}
+
+/* Global Reset */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-family);
+  background-color: var(--bg-app);
+  color: var(--text-primary);
+  overflow: hidden;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+  height: 100vh;
+  width: 100vw;
+}
+
+/* Acrylic / Glass Surface */
+.acrylic-card {
+  background: var(--bg-card);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  transition: all var(--transition-normal);
+}
+
+.acrylic-card:hover {
+  border-color: var(--border-default);
+  box-shadow: var(--shadow-hover);
+}
+
+/* Scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-default);
+  border-radius: var(--radius-pill);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+}
