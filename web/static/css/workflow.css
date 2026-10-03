@@ -1,173 +1,375 @@
 /* ==============================================================================
-   n8n-Inspired Workflow Visualizer — Node Canvas & Pipeline Graph
+   n8n-Inspired Workflow Visualizer — Authentic Node Canvas & Pipeline Graph
    ============================================================================== */
 
+/* ── 1. Canvas Container & Dot-Matrix Grid ──────────────────── */
 .workflow-canvas-container {
   position: relative;
   width: 100%;
   height: calc(100vh - 180px);
-  min-height: 700px;
+  min-height: 580px;
   overflow: auto;
   border-radius: var(--radius-lg);
-  border: 1px solid var(--border-subtle);
-  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  background-color: #171722;
+  box-shadow: inset 0 2px 14px rgba(0, 0, 0, 0.35);
+  cursor: default;
 }
 
+html[data-theme="light"] .workflow-canvas-container {
+  background-color: #f5f6fa;
+}
+
+/* Canvas Area — 2400px wide for clean linear flow */
 .workflow-canvas {
   position: relative;
-  width: 1000px;
-  height: 800px;
-  min-width: 1000px;
-  min-height: 800px;
-  background-color: var(--bg-mica);
-  background-image: radial-gradient(rgba(255, 255, 255, 0.08) 1.5px, transparent 1.5px);
+  width: 2320px;
+  height: 520px;
+  min-width: 2320px;
+  min-height: 520px;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.1) 1.5px, transparent 1.5px);
   background-size: 24px 24px;
+  transform-origin: 0 0;
+  transition: transform 0.15s ease-out;
 }
 
-html[data-theme="light"] .workflow-canvas,
-body[data-theme="light"] .workflow-canvas {
-  background-image: radial-gradient(rgba(0, 0, 0, 0.08) 1.5px, transparent 1.5px);
+html[data-theme="light"] .workflow-canvas {
+  background-image: radial-gradient(rgba(0, 0, 0, 0.1) 1.5px, transparent 1.5px);
 }
 
+/* ── 2. SVG Bézier Cable Connectors ─────────────────────────── */
 .workflow-connectors-svg {
   position: absolute;
   top: 0;
   left: 0;
-  width: 1000px !important;
-  height: 800px !important;
+  width: 2320px !important;
+  height: 520px !important;
   pointer-events: none;
   z-index: 1;
 }
 
 .workflow-connector-line {
   fill: none;
-  stroke: var(--border-default);
-  stroke-width: 2.5;
+  stroke: #475569;
+  stroke-width: 3px;
   stroke-linecap: round;
-  transition: all 0.3s ease;
+  transition: stroke 0.3s ease, stroke-width 0.3s ease;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.4));
 }
 
 .workflow-connector-line.line-active {
-  stroke: var(--accent);
-  stroke-width: 3.5;
-  filter: drop-shadow(0 0 8px rgba(0, 120, 212, 0.6));
-  stroke-dasharray: 8 4;
-  animation: dash 1s linear infinite;
+  stroke: #00d2ff !important;
+  stroke-width: 4px !important;
+  filter: drop-shadow(0 0 10px #00d2ff) !important;
+  stroke-dasharray: 8 6;
+  animation: flowDash 0.8s linear infinite;
 }
 
-@keyframes dash {
-  to { stroke-dashoffset: -12; }
+.workflow-connector-line.line-completed {
+  stroke: #10b981 !important;
+  stroke-width: 3px !important;
 }
 
-.workflow-node,
-.wf-node {
+@keyframes flowDash {
+  to { stroke-dashoffset: -14; }
+}
+
+/* ── 3. Authentic n8n Node Cards ────────────────────────────── */
+.workflow-node {
   position: absolute;
-  width: 240px;
-  background: var(--surface-card);
+  width: 260px;
+  height: 94px;
+  background: rgba(30, 30, 44, 0.94);
   backdrop-filter: blur(20px);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  padding: 14px 16px;
-  cursor: pointer;
-  z-index: 2;
-  box-shadow: var(--shadow-card);
-  transition: all var(--transition-fast);
+  border: 1.5px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  padding: 12px 14px;
+  cursor: grab;
+  z-index: 5;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
   user-select: none;
-}
-
-.workflow-node:hover,
-.wf-node:hover {
-  transform: translateY(-2px);
-  border-color: var(--accent);
-  box-shadow: var(--shadow-hover);
-}
-
-.workflow-node.node-running,
-.wf-node.active-running {
-  border-color: var(--accent);
-  box-shadow: 0 0 20px rgba(0, 120, 212, 0.45);
-}
-
-.workflow-node.node-completed,
-.wf-node.status-done {
-  border-color: rgba(16, 185, 129, 0.6);
-}
-
-.workflow-node.node-error,
-.wf-node.status-error {
-  border-color: rgba(239, 68, 68, 0.6);
-}
-
-.node-header,
-.wf-node-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.15s;
 }
 
-.node-status-indicator {
-  width: 8px;
-  height: 8px;
+html[data-theme="light"] .workflow-node {
+  background: rgba(255, 255, 255, 0.96);
+  border-color: rgba(0, 0, 0, 0.12);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
+}
+
+.workflow-node:hover {
+  transform: translateY(-2px);
+  border-color: var(--accent);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.38);
+}
+
+.workflow-node.dragging {
+  cursor: grabbing;
+  z-index: 20;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.5);
+  transform: scale(1.02);
+}
+
+.workflow-node.node-running {
+  border-color: #0078d4 !important;
+  box-shadow: 0 0 0 3px rgba(0, 120, 212, 0.35), 0 8px 28px rgba(0, 120, 212, 0.45) !important;
+  animation: nodePulse 1.8s infinite ease-in-out;
+}
+
+@keyframes nodePulse {
+  0% { box-shadow: 0 0 0 3px rgba(0, 120, 212, 0.3), 0 8px 20px rgba(0, 120, 212, 0.3); }
+  50% { box-shadow: 0 0 0 5px rgba(0, 120, 212, 0.5), 0 12px 30px rgba(0, 120, 212, 0.6); }
+  100% { box-shadow: 0 0 0 3px rgba(0, 120, 212, 0.3), 0 8px 20px rgba(0, 120, 212, 0.3); }
+}
+
+.workflow-node.node-completed {
+  border-color: rgba(16, 185, 129, 0.7) !important;
+  box-shadow: 0 4px 16px rgba(16, 185, 129, 0.2);
+}
+
+.workflow-node.node-error {
+  border-color: rgba(239, 68, 68, 0.8) !important;
+  box-shadow: 0 4px 16px rgba(239, 68, 68, 0.25);
+}
+
+/* ── 4. Connection Ports (Handles) ──────────────────────────── */
+.node-port {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
-  background: #94a3b8;
+  background: #1e1e2d;
+  border: 2.5px solid #94a3b8;
+  z-index: 10;
+  cursor: crosshair;
+  transition: all 0.15s ease;
+}
+
+html[data-theme="light"] .node-port {
+  background: #ffffff;
+  border-color: #64748b;
+}
+
+.port-input {
+  left: -7px;
+}
+
+.port-output {
+  right: -7px;
+}
+
+.node-port:hover {
+  background: var(--accent);
+  border-color: #ffffff;
+  transform: translateY(-50%) scale(1.3);
+  box-shadow: 0 0 8px var(--accent);
+}
+
+/* ── 5. Node Layout & Icon Badges ───────────────────────────── */
+.node-main-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.node-icon-box {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
 }
 
-.node-status-indicator.status-ready { background: #94a3b8; }
-.node-status-indicator.status-idle { background: #64748b; }
-.node-status-indicator.status-active {
-  background: #3b82f6;
-  box-shadow: 0 0 8px #3b82f6;
-  animation: pulse 1.5s infinite;
+.node-icon-box svg {
+  width: 18px !important;
+  height: 18px !important;
+  max-width: 18px !important;
+  max-height: 18px !important;
 }
-.node-status-indicator.status-complete { background: #10b981; }
-.node-status-indicator.status-error { background: #ef4444; }
 
-.node-title,
-.wf-node-title {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--text-primary);
+/* n8n Distinctive Colors */
+.icon-orange { background: rgba(255, 109, 90, 0.18); color: #ff6d5a; }
+.icon-blue { background: rgba(2, 132, 199, 0.18); color: #0284c7; }
+.icon-purple { background: rgba(139, 92, 246, 0.18); color: #8b5cf6; }
+.icon-emerald { background: rgba(16, 185, 129, 0.18); color: #10b981; }
+.icon-rose { background: rgba(236, 72, 153, 0.18); color: #ec4899; }
+.icon-amber { background: rgba(245, 158, 11, 0.18); color: #f59e0b; }
+.icon-indigo { background: rgba(59, 130, 246, 0.18); color: #3b82f6; }
+
+.node-text-col {
   flex: 1;
-}
-
-.node-badge,
-.wf-node-badge {
-  font-size: 10px;
-  font-weight: 600;
-  padding: 2px 6px;
-  border-radius: var(--radius-pill);
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--text-tertiary);
-}
-
-.node-body {
+  overflow: hidden;
   display: flex;
   flex-direction: column;
+  gap: 2px;
+}
+
+.node-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 6px;
 }
 
-.node-desc {
+.node-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.node-tag {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.tag-trigger {
+  background: rgba(255, 109, 90, 0.2);
+  color: #ff6d5a;
+}
+
+.node-subtitle {
   font-size: 11px;
   color: var(--text-secondary);
-  line-height: 1.4;
-  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.node-meta {
+/* ── 6. Node Status Pills ───────────────────────────────────── */
+.node-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-size: 10px;
-  color: var(--text-tertiary);
-  font-family: var(--font-mono);
+  font-weight: 600;
+  width: fit-content;
+  padding: 1px 6px;
+  border-radius: 10px;
+  margin-top: 1px;
 }
 
-/* Slide-out Node Inspector Drawer */
-.workflow-drawer,
-.node-drawer {
+.pill-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #94a3b8;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.status-ready { background: rgba(148, 163, 184, 0.15); color: #94a3b8; }
+.status-ready .pill-dot { background: #94a3b8; }
+
+.status-idle { background: rgba(100, 116, 139, 0.15); color: #94a3b8; }
+.status-idle .pill-dot { background: #64748b; }
+
+.status-active {
+  background: rgba(59, 130, 246, 0.2) !important;
+  color: #60a5fa !important;
+}
+.status-active .pill-dot {
+  background: #3b82f6 !important;
+  box-shadow: 0 0 6px #3b82f6;
+  animation: pulseDot 1.2s infinite;
+}
+
+@keyframes pulseDot {
+  0% { transform: scale(0.9); opacity: 0.7; }
+  50% { transform: scale(1.3); opacity: 1; }
+  100% { transform: scale(0.9); opacity: 0.7; }
+}
+
+.status-complete {
+  background: rgba(16, 185, 129, 0.2) !important;
+  color: #34d399 !important;
+}
+.status-complete .pill-dot {
+  background: #10b981 !important;
+}
+
+.status-error {
+  background: rgba(239, 68, 68, 0.2) !important;
+  color: #f87171 !important;
+}
+.status-error .pill-dot {
+  background: #ef4444 !important;
+}
+
+/* ── 7. Floating Canvas Controls HUD ────────────────────────── */
+.workflow-hud {
+  position: absolute;
+  bottom: 20px;
+  right: 20px;
+  background: rgba(24, 24, 34, 0.9);
+  backdrop-filter: blur(16px);
+  border: 1px solid var(--border-default);
+  border-radius: 24px;
+  padding: 4px 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  z-index: 50;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+
+html[data-theme="light"] .workflow-hud {
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+.hud-btn {
+  padding: 4px 8px;
+  font-size: 13px;
+  font-weight: 700;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  cursor: pointer;
+  border-radius: 12px;
+  transition: all 0.15s ease;
+}
+
+.hud-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--accent);
+}
+
+.hud-text {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  min-width: 44px;
+  text-align: center;
+}
+
+.hud-divider {
+  width: 1px;
+  height: 14px;
+  background: var(--border-subtle);
+}
+
+/* ── 8. Slide-Out Node Inspector Drawer ─────────────────────── */
+.workflow-drawer {
   position: absolute;
   top: 0;
-  right: -420px;
-  width: 400px;
+  right: -440px;
+  width: 420px;
   height: 100%;
   background: var(--bg-card);
   backdrop-filter: blur(28px);
@@ -180,8 +382,7 @@ body[data-theme="light"] .workflow-canvas {
   padding: 24px;
 }
 
-.workflow-drawer.open,
-.node-drawer.open {
+.workflow-drawer.open {
   right: 0;
 }
 
@@ -193,7 +394,7 @@ body[data-theme="light"] .workflow-canvas {
 }
 
 .drawer-title {
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 700;
   color: var(--text-primary);
   margin-bottom: 4px;
@@ -207,7 +408,7 @@ body[data-theme="light"] .workflow-canvas {
 .drawer-close {
   background: transparent;
   border: none;
-  font-size: 20px;
+  font-size: 22px;
   color: var(--text-tertiary);
   cursor: pointer;
   padding: 2px 6px;
@@ -234,20 +435,25 @@ body[data-theme="light"] .workflow-canvas {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 10px 12px;
-  background: rgba(0, 0, 0, 0.2);
+  padding: 10px 14px;
+  background: rgba(0, 0, 0, 0.22);
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-subtle);
 }
 
+html[data-theme="light"] .drawer-field-item {
+  background: rgba(0, 0, 0, 0.03);
+}
+
 .field-label {
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--text-tertiary);
   text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 .field-value {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-primary);
 }
