@@ -230,7 +230,8 @@ def build_installer() -> Path:
 
 def main():
     _ensure("pyinstaller", "PyInstaller")
-    build_app()
+    force = "--force" in sys.argv
+    build_app(force=force)
     installer_exe = build_installer()
     print("\n" + "=" * 64)
     print("Done! Double-click this file to install Content Pipeline:")

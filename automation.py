@@ -2757,7 +2757,7 @@ except Exception: pass
 print("\n✅ Dependencies ready.\n")
 
 # ── IMPORTS ──────────────────────────────────────────────────
-import json, sqlite3, textwrap, hashlib, re, platform, argparse, threading, queue, urllib.parse
+import json, sqlite3, textwrap, hashlib, re, platform, argparse, threading, queue, urllib.parse, ast
 import bundle_tool
 from io import BytesIO
 
@@ -3853,7 +3853,32 @@ def _clean_raw_llm_output(raw: str) -> str:
     return raw
 
 def _fix_common_json_errors(s):
+    # Strip single-line JS comments (e.g. // note)
+    s = re.sub(r'//[^\n\r]*', '', s)
+    # Remove trailing commas before } or ]
     return re.sub(r',\s*([}\]])', r'\1', s)
+
+def _fix_unquoted_bullets(s: str) -> str:
+    """
+    If LLM produced raw markdown bullets inside a JSON array without wrapping them in quotes:
+      "paragraphs": [
+        "Intro context",
+        - **Point 1**: explanation,
+        - **Point 2**: explanation
+      ]
+    Convert each bullet line into a valid quoted string.
+    """
+    lines = s.splitlines()
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if re.match(r'^[-*•]\s+', stripped) and not stripped.startswith('"') and not stripped.startswith("'"):
+            comma = "," if stripped.endswith(",") else ""
+            clean_item = stripped.rstrip(",").replace('"', "'")
+            new_lines.append(f'"{clean_item}"{comma}')
+        else:
+            new_lines.append(line)
+    return "\n".join(new_lines)
 
 def _escape_stray_quotes(s: str) -> str:
     """
@@ -3911,42 +3936,99 @@ def _heal_truncated_json(s):
 
 def _extract_sections_regex(raw):
     sections = []
-    blocks = re.findall(r'\{\s*"heading"\s*:\s*"[^"]+"[\s\S]*?\}(?=\s*,\s*\{|\s*\]|\s*$)', raw)
+    # Match any JSON object that contains a "heading" property
+    blocks = re.findall(r'\{[^{}]*?"heading"[\s\S]*?\}(?=\s*,\s*\{|\s*\]|\s*$)', raw)
     for block in blocks:
-        try:
-            d = json.loads(_fix_common_json_errors(block), strict=False)
-            if isinstance(d, dict) and "heading" in d:
-                sections.append(d)
-        except Exception: pass
+        for fn in [
+            lambda s: json.loads(_fix_common_json_errors(s), strict=False),
+            lambda s: json.loads(_fix_common_json_errors(_escape_stray_quotes(s)), strict=False),
+            lambda s: ast.literal_eval(re.sub(r'\b(true|false|null)\b', lambda m: {'true':'True','false':'False','null':'None'}[m.group(1)], s)),
+        ]:
+            try:
+                d = fn(block)
+                if isinstance(d, dict) and "heading" in d:
+                    sections.append(d)
+                    break
+            except Exception: pass
+    if not sections:
+        # Regex field extraction directly from raw text
+        for block in re.findall(r'\{[^{}]*?"heading"[\s\S]*?\}', raw):
+            hm = re.search(r'"heading"\s*:\s*"([^"]+)"', block)
+            if hm:
+                h = hm.group(1)
+                pm = re.search(r'"paragraphs"\s*:\s*\[([\s\S]*?)\]', block)
+                paras = []
+                if pm:
+                    paras = re.findall(r'"([^"\\]*(?:\\.[^"\\]*)*)"', pm.group(1))
+                if not paras:
+                    paras = [f"Guide on {h}."]
+                sections.append({
+                    "heading": h,
+                    "paragraphs": paras,
+                    "image_prompt": h,
+                    "image_alt": h[:120],
+                    "snippet": paras[0][:200] if paras else h
+                })
     if not sections:
         for h in re.findall(r'"heading"\s*:\s*"([^"]+)"', raw):
             sections.append({"heading":h,"paragraphs":[f"Optimized content for {h}."],
                              "image_prompt":h,"image_alt":h[:120],"snippet":f"Guide on {h}."})
     return sections
 
+def _normalize_parsed_content(d: dict) -> dict:
+    """Ensure sections list and all paragraph fields have valid formats."""
+    if not isinstance(d, dict):
+        return d
+    if "sections" in d and isinstance(d["sections"], list):
+        normalized_sections = []
+        for sec in d["sections"]:
+            if not isinstance(sec, dict):
+                continue
+            sec.setdefault("heading", "Section")
+            paras = sec.get("paragraphs")
+            if paras is None:
+                paras = sec.get("points") or sec.get("bullet_points") or sec.get("body") or sec.get("content")
+            if isinstance(paras, str):
+                paras = [p.strip() for p in paras.splitlines() if p.strip()] or [paras]
+            elif not isinstance(paras, list):
+                paras = [str(paras)] if paras else ["Section details."]
+            else:
+                paras = [str(p).strip() for p in paras if str(p).strip()]
+            sec["paragraphs"] = paras or ["Section details."]
+            sec.setdefault("image_prompt", sec["heading"])
+            sec.setdefault("image_alt", str(sec["heading"])[:120])
+            sec.setdefault("snippet", paras[0][:200] if paras else sec["heading"])
+            normalized_sections.append(sec)
+        d["sections"] = normalized_sections
+    return d
+
 def _parse_json(raw, expected_sections=0):
     clean = _clean_raw_llm_output(raw)
     for fn in [
         lambda s: json.loads(s, strict=False),
         lambda s: json.loads(_fix_common_json_errors(s), strict=False),
+        lambda s: json.loads(_fix_common_json_errors(_fix_unquoted_bullets(s)), strict=False),
         lambda s: json.loads(_heal_truncated_json(s), strict=False),
         lambda s: json.loads(_heal_truncated_json(s[:s.rfind('}')+1]), strict=False),
-        # stray-quote repair — tried after the cheap fixes fail, since it
-        # rewrites the string and is more likely to mask a genuine error
+        # stray-quote repair
         lambda s: json.loads(_fix_common_json_errors(_escape_stray_quotes(s)), strict=False),
+        lambda s: json.loads(_fix_common_json_errors(_escape_stray_quotes(_fix_unquoted_bullets(s))), strict=False),
         lambda s: json.loads(_heal_truncated_json(_escape_stray_quotes(s)), strict=False),
         lambda s: json.loads(_heal_truncated_json(
             _escape_stray_quotes(s[:s.rfind('}')+1])), strict=False),
+        # Python literal / single quotes / true/false/null fallback
+        lambda s: ast.literal_eval(re.sub(r'\b(true|false|null)\b', lambda m: {'true':'True','false':'False','null':'None'}[m.group(1)], s)),
+        lambda s: ast.literal_eval(re.sub(r'\b(true|false|null)\b', lambda m: {'true':'True','false':'False','null':'None'}[m.group(1)], s[:s.rfind('}')+1])),
     ]:
         try:
             d = fn(clean)
-            if isinstance(d, dict): return d
-            if isinstance(d, list): return {"sections": d}
+            if isinstance(d, dict): return _normalize_parsed_content(d)
+            if isinstance(d, list): return _normalize_parsed_content({"sections": d})
         except Exception: continue
     secs = _extract_sections_regex(raw)
     if secs:
         warn(f"Extracted {len(secs)} section(s) via regex.")
-        return {"sections": secs}
+        return _normalize_parsed_content({"sections": secs})
     if not raw.strip():
         raise ValueError("agy returned no output at all (not a JSON error) — "
                           "see the retry/canary warnings above for why.")
@@ -4006,7 +4088,8 @@ def _get_format_instructions(fmt: str = None) -> tuple:
             "- FORMAT REQUIREMENT: POINT-WISE / BULLET POINTS:\n"
             "  * First item in 'paragraphs' MUST be 1 introductory context paragraph (40-60 words).\n"
             "  * Followed by 3 to 6 distinct point-wise strings, each starting with: '- **Key Concept**: detailed actionable explanation'.\n"
-            "  * Conclude with 1 summary sentence string providing a takeaway or next step."
+            "  * Conclude with 1 summary sentence string providing a takeaway or next step.\n"
+            "  * IMPORTANT: Every bullet point MUST be an individual quoted string in the 'paragraphs' array. Never output unquoted raw markdown outside strings."
         )
         example = '["Introductory context for this section.", "- **First Point**: Detailed explanation of first key aspect.", "- **Second Point**: Practical insight or guideline.", "- **Third Point**: Critical factor to keep in mind.", "Closing takeaway sentence."]'
         label = "Point-Wise / Bullet Points"
@@ -4014,7 +4097,8 @@ def _get_format_instructions(fmt: str = None) -> tuple:
         rules = (
             "- FORMAT REQUIREMENT: SUB-HEADING WISE (H2 + H3):\n"
             "  * First item in 'paragraphs' MUST be 1 overview paragraph under the main H2.\n"
-            "  * Followed by 2 to 3 distinct subsections. Each subsection MUST begin with a string '### Subheading Title' (H3) followed immediately by 1-2 focused explanatory paragraphs."
+            "  * Followed by 2 to 3 distinct subsections. Each subsection MUST begin with a string '### Subheading Title' (H3) followed immediately by 1-2 focused explanatory paragraphs.\n"
+            "  * IMPORTANT: Every subheading and paragraph MUST be an individual quoted string in the 'paragraphs' array."
         )
         example = '["Overview of this section.", "### First Subheading Title", "In-depth explanation focusing on this specific sub-topic.", "### Second Subheading Title", "Detailed explanation for the second sub-topic."]'
         label = "Sub-Heading Wise (H2 + H3)"
@@ -4022,7 +4106,8 @@ def _get_format_instructions(fmt: str = None) -> tuple:
         rules = (
             "- FORMAT REQUIREMENT: HYBRID (PARAGRAPHS + BULLET POINTS):\n"
             "  * Each section 'paragraphs' MUST contain 1 to 2 rich explanatory narrative paragraphs.\n"
-            "  * Followed by 3 to 5 bullet point strings starting with '- **Key Takeaway**: ' highlighting essential facts, tips, or takeaways."
+            "  * Followed by 3 to 5 bullet point strings starting with '- **Key Takeaway**: ' highlighting essential facts, tips, or takeaways.\n"
+            "  * IMPORTANT: Every paragraph and bullet point MUST be an individual quoted string in the 'paragraphs' array."
         )
         example = '["In-depth explanatory paragraph detailing the background and importance...", "- **Key Takeaway 1**: Actionable summary of the primary fact.", "- **Key Takeaway 2**: Practical application or pro tip.", "- **Key Takeaway 3**: Common pitfall or expert recommendation."]'
         label = "Hybrid (Paragraphs + Bullet Points)"
@@ -4128,6 +4213,13 @@ RULES:
 {format_rules}
 {master_text_directive}
 
+JSON schema:
+{{
+  "sections": [
+    {{"heading":"H2","paragraphs":{paragraphs_example},"image_prompt":"{sec_img_hint}","image_alt":"alt","snippet":"answer"}}
+  ]
+}}
+
 Sections:
 {block}
 """
@@ -4142,30 +4234,49 @@ def _build_sections_block(sections):
     return "\n".join(lines)
 
 def _rewrite_single_section(s, title, seo_skill):
-    format_rules, paragraphs_example, _ = _get_format_instructions(CONFIG.get("article_format", "paragraphs"))
-    master_directive = _get_master_text_directive()
-    _, head_hint = _get_image_style_guidance()
-    prompt = (f"{seo_skill}\n---\nRewrite this section from \"{title}\" for SEO.\n"
-              f"HEADING: {s['heading']}\nBODY: {s.get('body','')[:1500]}\n\n"
-              f"RULES:\n"
-              f"{format_rules}\n"
-              f"{master_directive}\n"
-              f"Return ONLY valid JSON. NEVER use a double-quote character \" "
-              f"inside a string value — use single quotes ' ' instead:\n"
-              f"{{\"heading\":\"{s['heading']}\","
-              f"\"paragraphs\":{paragraphs_example},"
-              f"\"image_prompt\":\"{head_hint}\",\"image_alt\":\"alt\",\"snippet\":\"answer\"}}")
+    h = s.get("heading", "Section")
+    b = s.get("body", "")
     try:
+        format_rules, paragraphs_example, _ = _get_format_instructions(CONFIG.get("article_format", "paragraphs"))
+        master_directive = _get_master_text_directive()
+        _, head_hint, *_ = _get_image_style_guidance()
+        clean_heading = str(h).replace('"', "'")
+        prompt = (f"{seo_skill}\n---\nRewrite this section from \"{title}\" for SEO.\n"
+                  f"HEADING: {clean_heading}\nBODY: {str(b)[:1500]}\n\n"
+                  f"RULES:\n"
+                  f"{format_rules}\n"
+                  f"{master_directive}\n"
+                  f"Return ONLY valid JSON. NEVER use a double-quote character \" "
+                  f"inside a string value — use single quotes ' ' instead:\n"
+                  f"{{\"heading\":\"{clean_heading}\","
+                  f"\"paragraphs\":{paragraphs_example},"
+                  f"\"image_prompt\":\"{head_hint}\",\"image_alt\":\"alt\",\"snippet\":\"answer\"}}")
         raw = _run_agy(prompt, CONFIG["agy_timeout"])
         parsed = _parse_json(raw)
         if isinstance(parsed, dict):
-            if "heading" in parsed and "paragraphs" in parsed: return parsed
-            if "sections" in parsed and parsed["sections"]: return parsed["sections"][0]
-    except Exception: pass
-    return {"heading": s["heading"],
-            "paragraphs": [s.get("body","")[:600] or f"Guide to {s['heading']}."],
-            "image_prompt": s["heading"], "image_alt": s["heading"][:120],
-            "snippet": s.get("body","")[:200] or s["heading"]}
+            sec = None
+            if "heading" in parsed and ("paragraphs" in parsed or "body" in parsed or "points" in parsed):
+                sec = parsed
+            elif "sections" in parsed and parsed["sections"] and isinstance(parsed["sections"][0], dict):
+                sec = parsed["sections"][0]
+            if sec:
+                paras = sec.get("paragraphs") or sec.get("points") or sec.get("bullet_points") or sec.get("body") or sec.get("content")
+                if isinstance(paras, str):
+                    paras = [p.strip() for p in paras.splitlines() if p.strip()] or [paras]
+                elif not isinstance(paras, list):
+                    paras = [str(paras)]
+                sec["paragraphs"] = [str(p).strip() for p in paras if str(p).strip()] or [f"Guide on {clean_heading}."]
+                sec.setdefault("heading", h)
+                sec.setdefault("image_prompt", h)
+                sec.setdefault("image_alt", str(h)[:120])
+                sec.setdefault("snippet", sec["paragraphs"][0][:200])
+                return sec
+    except Exception as e:
+        warn(f"Section rewrite fallback for '{h}': {e}")
+    return {"heading": h,
+            "paragraphs": [b[:600] or f"Guide to {h}."],
+            "image_prompt": h, "image_alt": str(h)[:120],
+            "snippet": b[:200] or h}
 
 def phase_transform(extracted, url, db, seo_skill, category_override: str = ""):
     ph("2", "TRANSFORM", "Full SEO rewrite — ALL sections, no cap — per-batch checkpoint")
@@ -4224,10 +4335,31 @@ def phase_transform(extracted, url, db, seo_skill, category_override: str = ""):
         except Exception as e:
             warn(f"First batch notice ({escape(str(e))}) — recovering ...")
             base = {"title":title,"meta_description":f"Complete guide on {title}",
-                    "keywords":title,"category":"Guide","intro":f"Welcome to our guide on {title}.",
+                    "keywords":title,"category":category_override or "Guide","intro":f"Welcome to our guide on {title}.",
                     "feature_image_prompt":title,
                     "pin_image_prompt":f"Action planner, visual checklist and step-by-step roadmap for {title}",
                     "sections":[],"conclusion":None}
+            for s in batches[0]:
+                base["sections"].append(_rewrite_single_section(s, title, seo_skill))
+
+        if not isinstance(base, dict):
+            base = {}
+        if not base.get("title"):
+            base["title"] = title
+        if not base.get("meta_description"):
+            base["meta_description"] = f"Complete guide on {title}"
+        if not base.get("keywords"):
+            base["keywords"] = title
+        if not base.get("category"):
+            base["category"] = category_override or "Guide"
+        if not base.get("intro"):
+            base["intro"] = f"Welcome to our guide on {title}."
+        if not base.get("feature_image_prompt"):
+            base["feature_image_prompt"] = title
+        if not base.get("pin_image_prompt"):
+            base["pin_image_prompt"] = f"Action planner, visual checklist and step-by-step roadmap for {title}"
+        if not base.get("sections"):
+            base["sections"] = []
             for s in batches[0]:
                 base["sections"].append(_rewrite_single_section(s, title, seo_skill))
 
@@ -4781,7 +4913,7 @@ def phase_images(structured: dict, url: str, db, out_dir: Path) -> dict:
             slug  = f"{i:02d}_" + re.sub(r"[^a-z0-9]+","_",
                            sec.get("heading",f"section_{i}").lower())[:40]
             raw_scene = (sec.get("image_prompt","").strip() or
-                         f"{sec.get('heading','')}. {' '.join(sec.get('paragraphs',['']))[:150]}")
+                         f"{sec.get('heading','')}. {' '.join(str(p) for p in (sec.get('paragraphs') if isinstance(sec.get('paragraphs'), (list, tuple)) else [sec.get('paragraphs','')]) if p)[:150]}")
             scene = _resolve_image_prompt(raw_scene, image_role="section")
             label = f"Sec {i:02d}"
 
@@ -5072,6 +5204,8 @@ def _render_content_to_html(paragraphs: list) -> str:
     """Renders paragraphs, bullet points, and subheadings into styled HTML."""
     if not paragraphs:
         return ""
+    if isinstance(paragraphs, str):
+        paragraphs = [p.strip() for p in paragraphs.splitlines() if p.strip()] or [paragraphs]
     html_parts = []
     list_items = []
 
@@ -5126,10 +5260,23 @@ def _render_content_to_html(paragraphs: list) -> str:
     return "\n".join(html_parts)
 
 def _estimate_read_time(structured):
-    words = sum(len(str(p).split()) for s in structured.get("sections",[]) for p in s.get("paragraphs",[]))
-    words += len(str(structured.get("intro","")).split())
-    words += sum(len(str(p).split()) for p in (structured.get("conclusion") or {}).get("paragraphs",[]))
-    return max(1, round(words/200))
+    total_words = 0
+    for s in structured.get("sections", []):
+        paras = s.get("paragraphs", [])
+        if isinstance(paras, str):
+            total_words += len(paras.split())
+        elif isinstance(paras, (list, tuple)):
+            total_words += sum(len(str(p).split()) for p in paras if p)
+    intro = structured.get("intro", "")
+    total_words += len(str(intro).split())
+    concl = structured.get("conclusion")
+    if isinstance(concl, dict):
+        cparas = concl.get("paragraphs", [])
+        if isinstance(cparas, str):
+            total_words += len(cparas.split())
+        elif isinstance(cparas, (list, tuple)):
+            total_words += sum(len(str(p).split()) for p in cparas if p)
+    return max(1, round(total_words / 200))
 
 def phase_compile(structured, rendered, out_dir):
     ph("5","COMPILE","Building HTML with SEO meta + feature image + conclusion")

@@ -426,6 +426,8 @@ def _render_paragraphs_to_gutenberg_blocks(paragraphs: list) -> list:
     """
     if not paragraphs:
         return []
+    if isinstance(paragraphs, str):
+        paragraphs = [p.strip() for p in paragraphs.splitlines() if p.strip()] or [paragraphs]
     blocks = []
     list_items = []
 
