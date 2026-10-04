@@ -215,6 +215,7 @@ COLORS = {
     "sidebar":      "#080b12",
     "card":         "#121a2b",
     "card_alt":     "#1a2338",
+    "surface":      "#1e293b",
     "border":       "#22293b",
     "text":         "#e5e7eb",
     "text_dim":     "#a7b0c0",
@@ -228,6 +229,8 @@ COLORS = {
     "amber":        "#f59e0b",
     "red":          "#ef4444",
     "red_hover":    "#dc2626",
+    "danger":       "#ef4444",
+    "danger_hover": "#dc2626",
     "slate":        "#2b3446",
     "slate_hover":  "#38435a",
 }
