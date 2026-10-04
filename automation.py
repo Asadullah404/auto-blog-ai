@@ -3650,6 +3650,68 @@ def _resolve_image_prompt(scene: str, image_role: str = "section") -> str:
         combined += ", no text, no watermark"
     return combined
 
+def _optimize_prompt_for_clip(prompt: str, max_tokens: int = 70) -> str:
+    """
+    Optimizes a prompt for CLIP-based diffusion models (SD 1.5, SDXL, RealVisXL)
+    by removing redundant words and negative instructions, de-duplicating style tags,
+    and ensuring the estimated token length stays strictly within CLIP's 77-token ceiling.
+    This eliminates 'Token indices sequence length is longer than 77' warnings and token truncation.
+    """
+    cleaned = re.sub(r'\b(?:with\s+)?no\s+(?:text|watermark|words|letters|labels|font|typography|signatures?)\b', '', prompt, flags=re.IGNORECASE)
+    cleaned = re.sub(r'[\r\n\t]+', ' ', cleaned).strip()
+    cleaned = re.sub(r'\s+\b(?:and|with)\s*$', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\s*,\s*', ', ', cleaned)
+    cleaned = re.sub(r',\s*,+', ', ', cleaned)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip(' ,.')
+
+    raw_parts = [p.strip(' .,;:') for p in cleaned.split(',') if p.strip(' .,;:')]
+    seen_concepts = set()
+    deduped = []
+    for part in raw_parts:
+        low = part.lower()
+        if any(w in low for w in ['raw photo', 'unedited raw photo', 'dslr photo', 'photography', 'photorealistic', 'photo']):
+            if 'photo_style' in seen_concepts:
+                continue
+            seen_concepts.add('photo_style')
+        if any(w in low for w in ['natural daylight', 'natural lighting', 'sunlit', 'sun-drenched']):
+            if 'daylight' in seen_concepts:
+                continue
+            seen_concepts.add('daylight')
+        if any(w in low for w in ['cinematic lighting', 'studio lighting']):
+            if 'cine_light' in seen_concepts:
+                continue
+            seen_concepts.add('cine_light')
+        if any(w in low for w in ['sharp focus', 'hyperrealistic', 'ultra detailed', '8k', '8 k']):
+            if 'sharp_8k' in seen_concepts:
+                continue
+            seen_concepts.add('sharp_8k')
+        deduped.append(part)
+
+    def _est_clip_tokens(text: str) -> int:
+        tokens = re.findall(r'\w+|[^\w\s]', text)
+        c = 0
+        for t in tokens:
+            if len(t) <= 4:
+                c += 1
+            elif len(t) <= 8:
+                c += 2
+            else:
+                c += 1 + (len(t) // 4)
+        return c + 2
+
+    current = ', '.join(deduped)
+    while _est_clip_tokens(current) > max_tokens and len(deduped) > 2:
+        deduped.pop(-1)
+        current = ', '.join(deduped)
+
+    if _est_clip_tokens(current) > max_tokens:
+        words = current.split()
+        while words and _est_clip_tokens(' '.join(words)) > max_tokens:
+            words.pop()
+        current = ' '.join(words).rstrip('.,;:')
+
+    return current
+
 def _get_master_text_directive() -> str:
     """Returns the formatted Master Content & Text Directive if configured."""
     directive = CONFIG.get("master_text_prompt", "").strip()
@@ -4592,7 +4654,7 @@ def _generate_one_image_pollinations(scene: str, dest: Path, width: int, height:
         try:
             inf(f"  [magenta]Pollinations AI[/] generating {label} ({width}×{height}) [attempt {attempt}/{max_retries}] ...")
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-            r = requests.get(url, headers=headers, timeout=120)
+            r = requests.get(url, headers=headers, timeout=180, proxies={"http": None, "https": None})
             _LAST_POLLINATIONS_TIME = time.time()
 
             if r.status_code != 200:
@@ -4650,7 +4712,10 @@ def _generate_one_image_myserver(scene: str, dest: Path, width: int, height: int
     clean_prompt = re.sub(r'[\r\n\t]+', ' ', scene).strip()
     is_pin = "pin" in label.lower()
     if not is_pin and not any(k in clean_prompt.lower() for k in ["photorealistic", "photo", "cinematic", "photography"]):
-        clean_prompt = f"{clean_prompt}, photorealistic, cinematic lighting, sharp focus, professional photography, no text, no watermark"
+        clean_prompt = f"{clean_prompt}, photorealistic, cinematic lighting, sharp focus, professional photography"
+
+    # Strictly fit prompt for CLIP's 77-token ceiling (eliminates server warnings and truncation)
+    clean_prompt = _optimize_prompt_for_clip(clean_prompt, max_tokens=70)
 
     # Diffusers / SDXL pipelines strictly require width and height to be divisible by 8.
     sd_width = max(64, int(round(width / 8.0)) * 8)
@@ -4685,7 +4750,8 @@ def _generate_one_image_myserver(scene: str, dest: Path, width: int, height: int
     for attempt in range(1, max_retries + 1):
         try:
             inf(f"  [magenta]My Server[/] generating {label} ({sd_width}×{sd_height}) [attempt {attempt}/{max_retries}] ...")
-            r = requests.post(server_url, json=payload, headers=headers, timeout=180)
+            # Direct connection bypassing any local proxy, timeout extended to 300s for high-res generation
+            r = requests.post(server_url, json=payload, headers=headers, timeout=300, proxies={"http": None, "https": None})
 
             if r.status_code != 200:
                 if r.status_code == 404:

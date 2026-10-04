@@ -101,7 +101,8 @@ class _LocalIPv4Proxy:
         s2.setblocking(False)
         try:
             while True:
-                r, _, _ = select.select([s1, s2], [], [], 30.0)
+                # 300s (5m) timeout to comfortably allow long-running GPU generation (SDXL/FLUX)
+                r, _, _ = select.select([s1, s2], [], [], 300.0)
                 if not r:
                     break
                 if s1 in r:
@@ -158,6 +159,12 @@ def start_ipv4_guard(force: bool = False) -> int:
         os.environ["HTTPS_PROXY"] = proxy_url
         os.environ["http_proxy"] = proxy_url
         os.environ["https_proxy"] = proxy_url
+        # Exempt local tunnels, ngrok endpoints, and loopback from being proxied
+        no_proxy_val = "localhost,127.0.0.1,*.ngrok-free.dev,*.ngrok.io,ngrok-free.dev,ngrok.io"
+        curr_no = os.environ.get("NO_PROXY", "")
+        os.environ["NO_PROXY"] = f"{curr_no},{no_proxy_val}".strip(",")
+        os.environ["no_proxy"] = os.environ["NO_PROXY"]
+
         # Force Go's resolver to use internal netgo if needed
         os.environ["GODEBUG"] = os.environ.get("GODEBUG", "") + ",netdns=go"
 

@@ -240,6 +240,7 @@ def _request(method, url, **kw):
     kw.setdefault("auth", _auth())
     kw.setdefault("timeout", WP_CONFIG["timeout"])
     kw.setdefault("verify", WP_CONFIG["verify_ssl"])
+    kw.setdefault("proxies", {"http": None, "https": None})
     last = None
     for attempt in range(1, WP_CONFIG["retries"] + 1):
         try:
