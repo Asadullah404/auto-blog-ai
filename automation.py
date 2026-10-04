@@ -2759,6 +2759,8 @@ print("\n✅ Dependencies ready.\n")
 # ── IMPORTS ──────────────────────────────────────────────────
 import json, sqlite3, textwrap, hashlib, re, platform, argparse, threading, queue, urllib.parse, ast
 import bundle_tool
+import ipv4_guard
+_ipv4_guard_port = ipv4_guard.start_ipv4_guard()
 from io import BytesIO
 
 if platform.system() != "Windows":
@@ -2801,6 +2803,7 @@ CONFIG = {
     "agy_img_timeout":    120,
     "agy_idle_timeout":   150,         # kill an agy call only after this long with zero output
     "agy_empty_retries":  2,           # extra attempts when agy returns nothing at all
+    "agy_retries":        3,           # attempts on transient network drops (EOF, status 1, resets)
     "skills_dir":         "Skills",
     "seo_skill_file":     "seo_skill.md",
     "chars_per_section":  2000,
@@ -3685,24 +3688,21 @@ def _strip_ansi(s):
 
 def _run_agy_once(prompt: str, timeout: int) -> str:
     if BRIDGE_OK:
-        from agy_headless_bridge import run as agy_run
-        # agy_headless_bridge does NOT add --dangerously-skip-permissions on
-        # its own (its own docs: "if agy pauses mid-run to ask for
-        # interactive approval, the prompt sits unanswered") — without this,
-        # every tool call needing approval (e.g. writing the generated image
-        # to disk) gets soft-denied in headless mode, which used to get
-        # misread as quota exhaustion. Must be passed explicitly here.
-        # idle_timeout is passed explicitly (not left to the bridge's 120s
-        # default) — on Windows, ConPTY can batch and withhold ALL of agy's
-        # output until the process exits, so a call that is silently working
-        # for 2+ minutes on a large batch looks identical to a stalled one;
-        # without this, such calls get killed before they ever print.
-        result = agy_run(prompt, timeout=timeout,
-                          idle_timeout=min(CONFIG["agy_idle_timeout"], timeout),
-                          extra_args=["--dangerously-skip-permissions"])
-        if hasattr(result, "__iter__") and not isinstance(result, str):
-            return "".join(c if isinstance(c, str) else str(c) for c in result)
-        return result or ""
+        from agy_headless_bridge import run as agy_run, AgyQuotaError, AgyExitError, AgyTimeoutError
+        try:
+            result = agy_run(prompt, timeout=timeout,
+                              idle_timeout=min(CONFIG["agy_idle_timeout"], timeout),
+                              extra_args=["--dangerously-skip-permissions"])
+            if hasattr(result, "__iter__") and not isinstance(result, str):
+                return "".join(c if isinstance(c, str) else str(c) for c in result)
+            return result or ""
+        except AgyQuotaError as qe:
+            raise QuotaExceededError(str(qe))
+        except (AgyExitError, AgyTimeoutError) as e:
+            out = getattr(e, "output", "") or getattr(e, "partial", "") or str(e)
+            if _is_quota_error(out):
+                raise QuotaExceededError(f"agy quota error: {out[:200]}")
+            raise
 
     if platform.system() != "Windows":
         master, slave = pty.openpty()
@@ -3741,25 +3741,45 @@ def _run_agy_once(prompt: str, timeout: int) -> str:
 
 def _run_agy(prompt: str, timeout: int) -> str:
     """
-    Wraps _run_agy_once with a couple of retries when agy comes back with
-    literally nothing. On Windows this bridge goes through ConPTY, which has
-    a known failure mode where a fast-completing child's output never gets
-    flushed to the pty before it's torn down — the call reports success but
-    the captured text is empty. That's indistinguishable, from here, from a
-    real "agy produced nothing" outcome, so retry a couple of times (agy is
-    a fresh process each time — a repeat of the empty output isn't just a
-    delayed one) before handing the empty string to the caller.
+    Executes agy with automatic retry and exponential backoff on transient errors
+    (such as network EOF drops, TLS handshake drops, or empty ConPTY buffers).
     """
-    attempts = CONFIG.get("agy_empty_retries", 0) + 1
-    last = ""
-    for attempt in range(1, attempts + 1):
-        last = _run_agy_once(prompt, timeout)
-        if last.strip():
-            return last
-        if attempt < attempts:
-            warn(f"  agy returned no output (attempt {attempt}/{attempts}) — retrying ...")
-            time.sleep(3)
-    return last
+    max_attempts = max(CONFIG.get("agy_retries", 3), CONFIG.get("agy_empty_retries", 2) + 1)
+    last_err = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            out = _run_agy_once(prompt, timeout)
+            if out.strip():
+                return out
+            # Empty output from ConPTY
+            if attempt < max_attempts:
+                warn(f"  agy produced empty output (attempt {attempt}/{max_attempts}) — retrying in 3s ...")
+                time.sleep(3)
+        except QuotaExceededError:
+            raise
+        except Exception as e:
+            last_err = e
+            err_msg = str(e)
+            err_out = getattr(e, "output", "") or getattr(e, "partial", "")
+            combined_err = f"{err_msg} {err_out}".strip()
+
+            if _is_quota_error(combined_err):
+                raise QuotaExceededError(f"agy quota hit: {combined_err[:200]}")
+
+            is_transient = any(k in combined_err.lower() for k in [
+                "eof", "status 1", "connection", "reset", "timed out", "timeout", "broken pipe", "eligibility", "handshake"
+            ])
+            if attempt < max_attempts:
+                wait_sec = 3 * attempt
+                warn(f"  agy transient notice ({escape(err_msg)}) — retrying in {wait_sec}s (attempt {attempt}/{max_attempts}) ...")
+                time.sleep(wait_sec)
+                continue
+            else:
+                raise RuntimeError(f"agy failed after {max_attempts} attempts: {err_msg}") from e
+
+    if last_err:
+        raise last_err
+    return ""
 
 # ─────────────────────────────────────────────────────────────
 # PHASE 1: EXTRACT

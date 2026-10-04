@@ -34,6 +34,8 @@ import subprocess
 import threading
 import importlib
 import bundle_tool
+import ipv4_guard
+ipv4_guard.start_ipv4_guard()
 from pathlib import Path
 
 # Ensure UTF-8 stdout/stderr streams on Windows
