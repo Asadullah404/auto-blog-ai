@@ -84,3 +84,4 @@ echo   You can now launch Content Pipeline with extreme stability!
 echo =====================================================================
 echo.
 pause
+
