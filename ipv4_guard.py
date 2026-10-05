@@ -61,15 +61,27 @@ class _LocalIPv4Proxy:
                 host_port = parts[1]
                 host, port_str = host_port.split(":", 1) if ":" in host_port else (host_port, "443")
                 port = int(port_str)
-                # Resolve strictly to IPv4 address
+                # Resolve strictly to IPv4 addresses and try all returned endpoints
                 addrs = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
-                remote_ip = addrs[0][4][0]
-                remote_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                remote_sock.settimeout(15)
-                remote_sock.connect((remote_ip, port))
-                remote_sock.settimeout(None)
-                client_sock.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-                self._tunnel(client_sock, remote_sock)
+                remote_sock = None
+                for addr in addrs:
+                    try:
+                        remote_ip = addr[4][0]
+                        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        s.settimeout(10)
+                        s.connect((remote_ip, port))
+                        s.settimeout(None)
+                        remote_sock = s
+                        break
+                    except Exception:
+                        continue
+
+                if remote_sock:
+                    client_sock.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                    self._tunnel(client_sock, remote_sock)
+                else:
+                    client_sock.sendall(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
+                    client_sock.close()
             else:
                 # HTTP plain forwarding
                 host = None
@@ -81,13 +93,24 @@ class _LocalIPv4Proxy:
                         break
                 if host:
                     addrs = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
-                    remote_ip = addrs[0][4][0]
-                    remote_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    remote_sock.settimeout(15)
-                    remote_sock.connect((remote_ip, port))
-                    remote_sock.settimeout(None)
-                    remote_sock.sendall(req)
-                    self._tunnel(client_sock, remote_sock)
+                    remote_sock = None
+                    for addr in addrs:
+                        try:
+                            remote_ip = addr[4][0]
+                            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                            s.settimeout(10)
+                            s.connect((remote_ip, port))
+                            s.settimeout(None)
+                            remote_sock = s
+                            break
+                        except Exception:
+                            continue
+
+                    if remote_sock:
+                        remote_sock.sendall(req)
+                        self._tunnel(client_sock, remote_sock)
+                    else:
+                        client_sock.close()
                 else:
                     client_sock.close()
         except Exception:

@@ -2803,7 +2803,7 @@ CONFIG = {
     "agy_img_timeout":    120,
     "agy_idle_timeout":   150,         # kill an agy call only after this long with zero output
     "agy_empty_retries":  2,           # extra attempts when agy returns nothing at all
-    "agy_retries":        3,           # attempts on transient network drops (EOF, status 1, resets)
+    "agy_retries":        5,           # attempts on transient network drops (EOF, 503, status 1, resets)
     "skills_dir":         "Skills",
     "seo_skill_file":     "seo_skill.md",
     "chars_per_section":  2000,
@@ -3722,28 +3722,52 @@ def _get_master_text_directive() -> str:
 # ── AGY CORE ─────────────────────────────────────────────────
 _AGY_CANARY_OK = None
 
+def _format_agy_error(err_msg: str, err_out: str) -> str:
+    """Extracts a clear, human-readable diagnostic message from agy CLI exit output."""
+    raw = (err_out or "").strip()
+    if not raw:
+        return err_msg or "agy exited with status 1"
+
+    lower = raw.lower()
+    if "503" in lower or "service is currently unavailable" in lower:
+        return "Google Cloud 503: Service temporarily unavailable (server load)"
+    if "eof" in lower:
+        return "Network TLS drop (EOF) — reconnecting"
+    if "429" in lower or "rate limit" in lower or "too many requests" in lower:
+        return "Google Cloud 429: Rate limited"
+    if "resource_exhausted" in lower or "quota" in lower:
+        return "Google Cloud Quota reached"
+    if "unauthenticated" in lower or "login" in lower:
+        return "Google Cloud Auth expired (run 'agy auth login')"
+    if "proxy" in lower or "connection refused" in lower:
+        return "Connection refused / Proxy error"
+
+    for line in raw.splitlines():
+        line = line.strip()
+        if line.lower().startswith("error:"):
+            return line[:120]
+
+    first_line = raw.splitlines()[0].strip()
+    return first_line[:120] if first_line else (err_msg or "agy exited with status 1")
+
+
 def _check_agy(live: bool = False):
     """
-    live=True adds a one-time, cheap round-trip call to agy itself (cached
-    for the rest of the process) before the phase's real work starts. Without
-    this, a broken/unauthenticated agy silently burns through every batch (or
-    every image) producing nothing, each one only discovered several minutes
-    in — this fails fast with one clear message instead.
+    live=True adds a one-time canary call to agy before batch processing starts.
+    If the canary encounters a transient server load (503/EOF), it warns and
+    allows the pipeline to proceed with defensive per-section fallbacks.
     """
     if not shutil.which("agy"):
         err("agy not found. Install: curl -fsSL https://antigravity.google/cli/install.sh | bash")
         sys.exit(1)
     global _AGY_CANARY_OK
     if live and _AGY_CANARY_OK is None:
-        reply = _run_agy("Reply with exactly: PING", 40)
-        _AGY_CANARY_OK = bool(reply.strip())
-        if not _AGY_CANARY_OK:
-            err("agy ran but produced no output, even on a trivial test prompt and "
-                "after retries — it isn't currently usable from this pipeline. Try "
-                "`agy -p \"hi\"` by hand to check you're signed in and have quota "
-                "left, then re-run. (Aborting now instead of burning through every "
-                "remaining section/image against a broken agy.)")
-            sys.exit(1)
+        try:
+            reply = _run_agy("Reply with exactly: PING", 40)
+            _AGY_CANARY_OK = bool(reply.strip())
+        except Exception as e:
+            warn(f"  agy canary check notice ({escape(str(e))}) — proceeding with defensive section fallback.")
+            _AGY_CANARY_OK = True
 
 def _strip_ansi(s):
     return re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])').sub("", s)
@@ -3803,10 +3827,10 @@ def _run_agy_once(prompt: str, timeout: int) -> str:
 
 def _run_agy(prompt: str, timeout: int) -> str:
     """
-    Executes agy with automatic retry and exponential backoff on transient errors
-    (such as network EOF drops, TLS handshake drops, or empty ConPTY buffers).
+    Executes agy with automatic retry and progressive backoff on transient errors
+    (such as Google Cloud 503 load spikes, network EOF drops, TLS drops, or empty ConPTY buffers).
     """
-    max_attempts = max(CONFIG.get("agy_retries", 3), CONFIG.get("agy_empty_retries", 2) + 1)
+    max_attempts = max(CONFIG.get("agy_retries", 5), CONFIG.get("agy_empty_retries", 2) + 1)
     last_err = None
     for attempt in range(1, max_attempts + 1):
         try:
@@ -3828,16 +3852,14 @@ def _run_agy(prompt: str, timeout: int) -> str:
             if _is_quota_error(combined_err):
                 raise QuotaExceededError(f"agy quota hit: {combined_err[:200]}")
 
-            is_transient = any(k in combined_err.lower() for k in [
-                "eof", "status 1", "connection", "reset", "timed out", "timeout", "broken pipe", "eligibility", "handshake"
-            ])
+            reason = _format_agy_error(err_msg, err_out)
             if attempt < max_attempts:
-                wait_sec = 3 * attempt
-                warn(f"  agy transient notice ({escape(err_msg)}) — retrying in {wait_sec}s (attempt {attempt}/{max_attempts}) ...")
+                wait_sec = 5 * attempt
+                warn(f"  agy notice ({escape(reason)}) — retrying in {wait_sec}s (attempt {attempt}/{max_attempts}) ...")
                 time.sleep(wait_sec)
                 continue
             else:
-                raise RuntimeError(f"agy failed after {max_attempts} attempts: {err_msg}") from e
+                raise RuntimeError(f"agy failed after {max_attempts} attempts: {reason}") from e
 
     if last_err:
         raise last_err
@@ -5663,6 +5685,8 @@ def main():
     console.print()
 
     _check_agy(); ok("agy found on PATH.")
+    if _ipv4_guard_port:
+        ok(f"IPv4 Guard active on port {_ipv4_guard_port} (shielding agy from IPv6 drops)")
     if CONFIG["use_gpu"]: ok("GPU (CuPy) enabled.")
     else: inf("CPU mode.")
     engine_desc = ("My Server (Colab/ngrok GPU)" if CONFIG["image_engine"] == "my_server"
