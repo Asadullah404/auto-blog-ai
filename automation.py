@@ -3775,14 +3775,14 @@ def _strip_ansi(s):
     return re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])').sub("", s)
 
 def _run_agy_once(prompt: str, timeout: int) -> str:
-    # Ensure Go resolver uses Windows native GetAddrInfoW (strip any netdns=go)
+    # Force Go's DNS resolver to use Windows native GetAddrInfoW (netdns=cgo).
+    # On Windows, Go defaults to pure-Go resolver (preferCgo = false), querying external DNS (1.1.1.1:53)
+    # for 'localhost' if hosts lacks it, causing "listen tcp: lookup localhost on 1.1.1.1:53: no such host".
+    # Setting netdns=cgo forces Windows GetAddrInfoW, which resolves localhost in-memory with 0 network calls.
     godebug = os.environ.get("GODEBUG", "")
-    if "netdns=" in godebug:
-        parts = [p for p in godebug.split(",") if not p.startswith("netdns=") and p]
-        if parts:
-            os.environ["GODEBUG"] = ",".join(parts)
-        else:
-            os.environ.pop("GODEBUG", None)
+    parts = [p for p in godebug.split(",") if not p.startswith("netdns=") and p]
+    parts.append("netdns=cgo")
+    os.environ["GODEBUG"] = ",".join(parts)
 
     if BRIDGE_OK:
         from agy_headless_bridge import run as agy_run, AgyQuotaError, AgyExitError, AgyTimeoutError

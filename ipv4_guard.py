@@ -158,6 +158,22 @@ class _LocalIPv4Proxy:
             pass
 
 
+def _ensure_hosts_localhost():
+    """Best-effort update to Windows hosts file ensuring 127.0.0.1 localhost exists."""
+    if sys.platform != "win32":
+        return
+    try:
+        hosts_file = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), r"System32\drivers\etc\hosts")
+        if os.path.isfile(hosts_file):
+            with open(hosts_file, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+            if "127.0.0.1 localhost" not in content and "127.0.0.1\tlocalhost" not in content:
+                with open(hosts_file, "a", encoding="utf-8") as f:
+                    f.write("\n127.0.0.1 localhost\n::1 localhost\n")
+    except Exception:
+        pass
+
+
 def start_ipv4_guard(force: bool = False) -> int:
     """
     Starts an in-process IPv4-forcing loopback proxy and configures
@@ -168,6 +184,9 @@ def start_ipv4_guard(force: bool = False) -> int:
     with _LOCK:
         if _RUNNING_PROXY and _RUNNING_PROXY.running:
             return _RUNNING_PROXY.port
+
+        # Best-effort hosts file check
+        _ensure_hosts_localhost()
 
         # Don't override if user already specified an external HTTP proxy
         existing = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
@@ -188,15 +207,15 @@ def start_ipv4_guard(force: bool = False) -> int:
         os.environ["NO_PROXY"] = f"{curr_no},{no_proxy_val}".strip(",")
         os.environ["no_proxy"] = os.environ["NO_PROXY"]
 
-        # Ensure Go's DNS resolver uses Windows native GetAddrInfoW (NEVER netdns=go,
-        # which breaks internal localhost resolution by querying public DNS for 'localhost').
+        # Force Go's DNS resolver to use Windows native GetAddrInfoW (netdns=cgo).
+        # On Windows, Go defaults to its pure-Go resolver (confVal.preferCgo = false),
+        # which queries external DNS (e.g. 1.1.1.1:53) for 'localhost' if hosts lacks it,
+        # causing "listen tcp: lookup localhost on 1.1.1.1:53: no such host".
+        # Setting netdns=cgo forces Windows GetAddrInfoW, which resolves localhost in-memory.
         godebug = os.environ.get("GODEBUG", "")
-        if "netdns=" in godebug:
-            parts = [p for p in godebug.split(",") if not p.startswith("netdns=") and p]
-            if parts:
-                os.environ["GODEBUG"] = ",".join(parts)
-            else:
-                os.environ.pop("GODEBUG", None)
+        parts = [p for p in godebug.split(",") if not p.startswith("netdns=") and p]
+        parts.append("netdns=cgo")
+        os.environ["GODEBUG"] = ",".join(parts)
 
         return proxy.port
 
