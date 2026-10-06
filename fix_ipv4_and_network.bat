@@ -54,10 +54,19 @@ echo [*] Step 4: Setting DNS to Cloudflare (1.1.1.1) and Google (8.8.8.8) on act
 powershell -Command "Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | ForEach-Object { Set-DnsClientServerAddress -InterfaceAlias $_.Name -ServerAddresses ('1.1.1.1', '8.8.8.8') -ErrorAction SilentlyContinue; Write-Host ('     [OK] Configured DNS (1.1.1.1, 8.8.8.8) on: ' + $_.Name) }"
 
 :: ---------------------------------------------------------
-:: 6. Flush Windows DNS Cache & Reset Sockets
+:: 6. Ensure 127.0.0.1 Localhost Mapping & Strip Rogue GODEBUG
 :: ---------------------------------------------------------
 echo.
-echo [*] Step 5: Flushing DNS cache and resetting TCP state...
+echo [*] Step 5: Ensuring local machine resolution (127.0.0.1 localhost)...
+powershell -Command "if (-not (Select-String -Path 'C:\Windows\System32\drivers\etc\hosts' -Pattern '^\s*[^#\s]*127\.0\.0\.1\s+localhost' -Quiet)) { Add-Content -Path 'C:\Windows\System32\drivers\etc\hosts' -Value ('`n127.0.0.1 localhost`n::1 localhost'); Write-Host '     [OK] Added localhost mapping to Windows hosts file.' } else { Write-Host '     [OK] localhost mapping already active.' }"
+reg delete "HKCU\Environment" /v GODEBUG /f >nul 2>&1
+reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v GODEBUG /f >nul 2>&1
+
+:: ---------------------------------------------------------
+:: 7. Flush Windows DNS Cache & Reset Sockets
+:: ---------------------------------------------------------
+echo.
+echo [*] Step 6: Flushing DNS cache and resetting TCP state...
 ipconfig /flushdns >nul 2>&1
 netsh winsock reset catalog >nul 2>&1
 echo     [OK] DNS cache flushed and network catalog refreshed.

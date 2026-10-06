@@ -183,13 +183,20 @@ def start_ipv4_guard(force: bool = False) -> int:
         os.environ["http_proxy"] = proxy_url
         os.environ["https_proxy"] = proxy_url
         # Exempt local tunnels, ngrok endpoints, and loopback from being proxied
-        no_proxy_val = "localhost,127.0.0.1,*.ngrok-free.dev,*.ngrok.io,ngrok-free.dev,ngrok.io"
+        no_proxy_val = "localhost,127.0.0.1,::1,*.ngrok-free.dev,*.ngrok.io,ngrok-free.dev,ngrok.io"
         curr_no = os.environ.get("NO_PROXY", "")
         os.environ["NO_PROXY"] = f"{curr_no},{no_proxy_val}".strip(",")
         os.environ["no_proxy"] = os.environ["NO_PROXY"]
 
-        # Force Go's resolver to use internal netgo if needed
-        os.environ["GODEBUG"] = os.environ.get("GODEBUG", "") + ",netdns=go"
+        # Ensure Go's DNS resolver uses Windows native GetAddrInfoW (NEVER netdns=go,
+        # which breaks internal localhost resolution by querying public DNS for 'localhost').
+        godebug = os.environ.get("GODEBUG", "")
+        if "netdns=" in godebug:
+            parts = [p for p in godebug.split(",") if not p.startswith("netdns=") and p]
+            if parts:
+                os.environ["GODEBUG"] = ",".join(parts)
+            else:
+                os.environ.pop("GODEBUG", None)
 
         return proxy.port
 

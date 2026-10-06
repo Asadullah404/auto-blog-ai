@@ -3739,6 +3739,8 @@ def _format_agy_error(err_msg: str, err_out: str) -> str:
         return "Google Cloud Quota reached"
     if "unauthenticated" in lower or "login" in lower:
         return "Google Cloud Auth expired (run 'agy auth login')"
+    if "lookup localhost" in lower:
+        return "DNS localhost resolution glitch (recovering via 127.0.0.1)"
     if "proxy" in lower or "connection refused" in lower:
         return "Connection refused / Proxy error"
 
@@ -3773,6 +3775,15 @@ def _strip_ansi(s):
     return re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])').sub("", s)
 
 def _run_agy_once(prompt: str, timeout: int) -> str:
+    # Ensure Go resolver uses Windows native GetAddrInfoW (strip any netdns=go)
+    godebug = os.environ.get("GODEBUG", "")
+    if "netdns=" in godebug:
+        parts = [p for p in godebug.split(",") if not p.startswith("netdns=") and p]
+        if parts:
+            os.environ["GODEBUG"] = ",".join(parts)
+        else:
+            os.environ.pop("GODEBUG", None)
+
     if BRIDGE_OK:
         from agy_headless_bridge import run as agy_run, AgyQuotaError, AgyExitError, AgyTimeoutError
         try:
